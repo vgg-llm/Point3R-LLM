@@ -7,6 +7,9 @@ from scipy.spatial.transform import Rotation as R
 
 
 def get_frame_id(img_path):
+    """
+    Currently only support ScanNet image path format.
+    """
     try:
         ret = img_path.split("/")[-1].split(".")[0]
         return int(ret)
@@ -14,12 +17,16 @@ def get_frame_id(img_path):
         import pdb; pdb.set_trace()
 
 
-def _9dof_to_box(box):
-    """Convert 9-DoF box from array/tensor to open3d.OrientedBoundingBox.
+def embodiedscan_bbox_to_o3d_geo(box):
+    """
+    Convert an EmbodiedScan 9-DOF bounding box to an Open3D OrientedBoundingBox.
 
     Args:
-        box (numpy.ndarray|torch.Tensor|List[float]):
-            9-DoF box with shape (9,).
+        box (list or np.ndarray): A 9-element sequence [x, y, z, dx, dy, dz, rx, ry, rz]
+                                  representing center, size, and rotation (Euler ZXY).
+
+    Returns:
+        open3d.geometry.OrientedBoundingBox: The corresponding Open3D geometry object.
     """
     if isinstance(box, list):
         box = np.array(box)
@@ -32,25 +39,48 @@ def _9dof_to_box(box):
 
     return geo
 
-def _box_to_9dof(obb):
+
+def o3d_geo_to_9dof(obb, convention):
+    """
+    Convert an Open3D OrientedBoundingBox to a 9-DOF bounding box list.
+
+    Args:
+        obb (open3d.geometry.OrientedBoundingBox): The Open3D geometry object.
+        convention (str): The Euler angle convention (e.g., 'ZXY').
+
+    Returns:
+        list: A 9-element list [x, y, z, dx, dy, dz, rx, ry, rz] representing
+              center, size, and rotation.
+    """
     center = obb.center
     size = obb.extent
     rotation = R.from_matrix(obb.R)
-    euler = rotation.as_euler('zxy')
+    euler = rotation.as_euler(convention)
     ret = list(center) + list(size) + list(euler)
     return ret
 
 
-def _9dof_from_world_to_camera(box, extrinsic):
+def _9dof_transform_world2cam(box, extrinsic, convention):
+    """
+    Transform a 9-DOF bounding box from world coordinates to camera coordinates.
+
+    Args:
+        box (list or np.ndarray): A 9-element sequence [x, y, z, dx, dy, dz, rx, ry, rz]
+                                  representing the box in world coordinates.
+        extrinsic (np.ndarray): The 4x4 camera-to-world transformation matrix.
+        convention (str): The Euler angle convention (e.g., 'ZXY').
+
+    Returns:
+        list: A 9-element list representing the box in camera coordinates.
+    """
     center = box[:3]
     extent = box[3:6]
     euler = box[6:]
 
     global2cam = np.linalg.inv(extrinsic)
     new_center = (global2cam @ np.array(list(center) + [1]).reshape(4, 1)).reshape(4)[:3].tolist()
-    new_rot = global2cam[:3, :3] @ R.from_euler('zxy', euler).as_matrix()
-    new_euler = R.from_matrix(new_rot).as_euler('zxy').tolist()
-
+    new_rot = global2cam[:3, :3] @ R.from_euler(convention, euler).as_matrix()
+    new_euler = R.from_matrix(new_rot).as_euler(convention).tolist()
     new_bbox = new_center + extent + new_euler
     return new_bbox
 
@@ -109,7 +139,10 @@ def calculate_box_projection_area(box, extrinsic, intrinsic):
     return polygon.area
 
 
-def get_images(images, nframe):
+def uniform_sample_images(images, nframe):
+    """
+    Uniformly sample nframe images from the list of images.
+    """
     idx = random.randint(0, len(images))
     images = images[idx:] + images[:idx]
     if len(images) < nframe:
@@ -119,14 +152,17 @@ def get_images(images, nframe):
 
 
 
-def get_images_with_gt_instance(scan, nframes, gt_instance_id):
-    new_images = get_images(scan["images"], nframes)
+def sample_images_and_best_view(scan, nframes, gt_instance_id):
+    """
+    Sample nframes images containing the target instance and identify the best view.
+    """
+    new_images = uniform_sample_images(scan["images"], nframes)
     flg = False
     for _ in range(20):
         if any([gt_instance_id in image["visible_instance_ids"] for image in new_images]):
             flg = True
             break
-        new_images = get_images(scan["images"], nframes)
+        new_images = uniform_sample_images(scan["images"], nframes)
     if not flg:
         new_images = new_images[:-1]
         for img in scan["images"]:
@@ -138,7 +174,7 @@ def get_images_with_gt_instance(scan, nframes, gt_instance_id):
     
     frame_id = -1 
     max_area = 0
-    obb = _9dof_to_box(scan["instances"][gt_instance_id]["bbox_3d"])
+    obb = embodiedscan_bbox_to_o3d_geo(scan["instances"][gt_instance_id]["bbox_3d"])
 
     for i, img in enumerate(new_images):
         extrinsic = np.array(scan["axis_align_matrix"]) @ np.array(img["cam2global"])

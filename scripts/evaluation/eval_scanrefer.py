@@ -18,8 +18,8 @@ def proposal_matching(proposals, pred_bbox):
         cur_bbox = proposal + [0, 0, 0]
         try:
             iou = EulerDepthInstance3DBoxes.overlaps(
-                EulerDepthInstance3DBoxes(torch.tensor([pred_bbox])),
-                EulerDepthInstance3DBoxes(torch.tensor([cur_bbox]))
+                EulerDepthInstance3DBoxes(torch.tensor([pred_bbox]), convention="ZXY"),
+                EulerDepthInstance3DBoxes(torch.tensor([cur_bbox]), convention="ZXY")
             ).item()
         except Exception as e:
             print(f"Error in calculating IoU: {e}")
@@ -48,8 +48,8 @@ def main(data, args):
 
         try:
             iou = EulerDepthInstance3DBoxes.overlaps(
-                EulerDepthInstance3DBoxes(torch.tensor([refined_bbox])),
-                EulerDepthInstance3DBoxes(torch.tensor([gt_bbox]))
+                EulerDepthInstance3DBoxes(torch.tensor([refined_bbox]), convention="ZXY"),
+                EulerDepthInstance3DBoxes(torch.tensor([gt_bbox]), convention="ZXY")
             ).item()
         except Exception as e:
             print(f"Error in calculating IoU: {e}")

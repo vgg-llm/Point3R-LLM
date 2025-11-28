@@ -38,7 +38,8 @@ advance this field by enhancing the capability of MLLMs to understand and reason
 in 3D spaces directly from video data, without the need for additional 3D input.
 
 ## 📢News
-* [2025-09-23] We release the 7B size models fintuned on Qwen2.5-VL-7B-Instruct, which achieve better performance and inference speed. Check out our latest revision [here](assets/VG_LLM_Neurips_2025.pdf).
+* [2025-11-27] For 3D scene understanding, we changed the orientation convention from extrinsic 'zxy' to intrinsic 'ZXY', and the corresponding models and data have been updated accordingly.
+* [2025-09-23] We release the 7B size models fintuned on Qwen2.5-VL-7B-Instruct, which achieve better performance and inference speed. Check out our latest revision [here](https://arxiv.org/abs/2505.24625).
 * [2025-09-18] Our paper has been accepted by NeurIPS 2025!
 
 

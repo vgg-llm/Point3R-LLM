@@ -39,17 +39,17 @@ def scanrefer_doc_to_text(doc, lmms_eval_specific_kwargs=None):
     return prompt
 
 
-def transform_scanrefer_bbox(bbox, extrinsic=None):
+def scanrefer_bbox_to_9dof(bbox, convention, extrinsic=None):
     center = bbox[0: 3]
     sizes = bbox[3:6]
-    rot = R.from_euler("zxy", np.array(bbox[6:9]))
+    rot = R.from_euler(convention, np.array(bbox[6:9]))
     if extrinsic is not None:
         center = (extrinsic @ np.array([*center, 1]).reshape(4, 1)).reshape(4)[:3].tolist()
         mat = extrinsic[:3, :3] @ rot.as_matrix()
         rot = R.from_matrix(mat)
-    zxy = list(rot.as_euler("zxy"))
+    euler = list(rot.as_euler(convention))
 
-    return center + sizes + zxy
+    return center + sizes + euler
 
 
 def scanrefer_process_results(doc, results):
@@ -75,10 +75,10 @@ def scanrefer_process_results(doc, results):
             
             frame_idx = pred_dict["frame"]
             extrinsic = np.array(doc["axis_align_matrix"]) @ np.array(doc["cam2global"][frame_idx])
-            pred_bbox = transform_scanrefer_bbox(pred_dict["bbox_3d"], extrinsic)
+            pred_bbox = scanrefer_bbox_to_9dof(pred_dict["bbox_3d"], convention="ZXY", extrinsic=extrinsic)
             iou = EulerDepthInstance3DBoxes.overlaps(
-                EulerDepthInstance3DBoxes(torch.tensor([pred_bbox])),
-                EulerDepthInstance3DBoxes(torch.tensor([gt_bbox]))
+                EulerDepthInstance3DBoxes(torch.tensor([pred_bbox]), convention="ZXY"),
+                EulerDepthInstance3DBoxes(torch.tensor([gt_bbox]), convention="ZXY")
             ).item()
         except Exception as e:
             eval_logger.error(f"Error parsing pred_dict: {pred_dict} with error: {e}")

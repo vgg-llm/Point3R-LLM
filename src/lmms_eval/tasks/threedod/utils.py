@@ -13,7 +13,6 @@ from typing import Union
 from pytorch3d.ops import box3d_overlap
 from pytorch3d.transforms import euler_angles_to_matrix
 from terminaltables import AsciiTable
-from scipy.spatial.transform import Rotation as R
 
 cate8 = [
     "chair", "cabinet", "table", "bin", "couch", "bed", "bathtub", "toilet",
@@ -29,7 +28,7 @@ cate31 = [
     "window", "shelf", "curtain", "plant", "stairs", "picture", "book", "bottle", "lamp", "towl", "sink",
 ]
 
-def rotation_3d_in_euler(points, angles, return_mat=False, clockwise=False):
+def rotation_3d_in_euler(points, angles, convention, return_mat=False, clockwise=False):
     """Rotate points by angles according to axis.
 
     Args:
@@ -63,7 +62,8 @@ def rotation_3d_in_euler(points, angles, return_mat=False, clockwise=False):
     assert points.shape[-1] in [2, 3], \
         f'Points size should be 2 or 3 instead of {points.shape[-1]}'
 
-    rot_mat_T = euler_angles_to_matrix(angles, 'ZXY')  # N, 3,3
+    rot_mat_T = euler_angles_to_matrix(angles, convention)  # N, 3,3
+    # rot_mat_T = torch.tensor(R.from_euler(convention, angles.cpu().numpy()).as_matrix(), dtype=torch.float32)
     rot_mat_T = rot_mat_T.transpose(-2, -1)
 
     if clockwise:
@@ -118,6 +118,7 @@ class EulerDepthInstance3DBoxes:
 
     def __init__(self,
                  tensor,
+                 convention="ZXY",
                  box_dim=9,
                  with_yaw=True,
                  origin=(0.5, 0.5, 0.5)):
@@ -157,6 +158,7 @@ class EulerDepthInstance3DBoxes:
             src = self.tensor.new_tensor(origin)
             self.tensor[:, :3] += self.tensor[:, 3:6] * (dst - src)
         self.with_yaw = with_yaw
+        self.convention = convention
 
     def __len__(self) -> int:
         """int: Number of boxes in the current object."""
@@ -272,7 +274,7 @@ class EulerDepthInstance3DBoxes:
         corners = dims.view([-1, 1, 3]) * corners_norm.reshape([1, 8, 3])
 
         # rotate
-        corners = rotation_3d_in_euler(corners, self.tensor[:, 6:])
+        corners = rotation_3d_in_euler(corners, self.tensor[:, 6:], self.convention)
 
         corners += self.tensor[:, :3].view(-1, 1, 3)
         return corners
@@ -322,8 +324,8 @@ def compute_ap(gt_bbox_dict, pred_bbox_dict, iou_threshold=0.25):
                     continue
                 try:
                     iou = EulerDepthInstance3DBoxes.overlaps(
-                        EulerDepthInstance3DBoxes(torch.tensor([bbox])),
-                        EulerDepthInstance3DBoxes(torch.tensor([gt_box]))
+                        EulerDepthInstance3DBoxes(torch.tensor([bbox]), convention="ZXY"),
+                        EulerDepthInstance3DBoxes(torch.tensor([gt_box]), convention="ZXY")
                     )
                 except Exception as e:
                     eval_logger.error(f"Error calculating IOU: {e}")
