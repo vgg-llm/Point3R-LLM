@@ -640,9 +640,10 @@ class Qwen2_5_VLRotaryEmbedding(nn.Module):
             self._dynamic_frequency_update(position_ids, device=x.device)
 
         # Core RoPE block. In contrast to other models, Qwen2_5_VL has different position ids for the grids
-        # So we expand the inv_freq to shape (3, ...)
-        inv_freq_expanded = self.inv_freq[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
-        position_ids_expanded = position_ids[:, :, None, :].float()  # shape (3, bs, 1, positions)
+        # So we expand the inv_freq to shape (num_dims, ...) where num_dims is 3 or 4
+        num_dims = position_ids.shape[0]  # Get actual number of dimensions (3 or 4)
+        inv_freq_expanded = self.inv_freq[None, None, :, None].float().expand(num_dims, position_ids.shape[1], -1, 1)
+        position_ids_expanded = position_ids[:, :, None, :].float()  # shape (num_dims, bs, 1, positions)
         # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
         device_type = x.device.type
         device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
@@ -1152,6 +1153,8 @@ class Qwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+        self.num_position_dims = 4 # Changed from 3 to 4 to support Point3R depth dimension
+
     def get_input_embeddings(self):
         return self.embed_tokens
 
@@ -1202,11 +1205,12 @@ class Qwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
 
-        # the hard coded `3` is for temporal, height and width.
+        # Default to 4D (temporal, height, width, depth) for compatibility with Point3R
+        # Falls back to 3D if needed based on the model configuration
         if position_ids is None:
-            position_ids = cache_position.view(1, 1, -1).expand(3, inputs_embeds.shape[0], -1)
+            position_ids = cache_position.view(1, 1, -1).expand(self.num_position_dims, inputs_embeds.shape[0], -1)
         elif position_ids.dim() == 2:
-            position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
+            position_ids = position_ids[None, ...].expand(self.num_position_dims, position_ids.shape[0], -1)
 
         causal_mask = self._update_causal_mask(
             attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
