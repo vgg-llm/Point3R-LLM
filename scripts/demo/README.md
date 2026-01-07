@@ -32,6 +32,7 @@ Demonstrates how to use the Point3R-enhanced model with pointer memory support.
 - Uses `Qwen2_5_VLProcessorWithPoint3R`
 - Supports pointer tokens for 3D scene memory
 - Shows both standard and pointer-enhanced usage
+- Extracts actual Point3R memory from images
 
 **Usage:**
 ```bash
@@ -40,7 +41,53 @@ python scripts/demo/demo_point3r.py
 
 **What it does:**
 1. **Example 1:** Standard image processing (without pointers)
-2. **Example 2:** Shows how to structure pointer memory inputs (demonstration only)
+2. **Example 2:** Extracts Point3R memory from images and generates responses using pointer tokens
+
+---
+
+### 3. `extract_pointer_memory.py` - Pointer Memory Extraction Utility
+Utility module for extracting Point3R memory features from images.
+
+**Key Function:**
+```python
+extract_pointer_memory(
+    image_inputs,           # List of images (paths, PIL, or numpy)
+    point3r_model,          # Loaded Point3R model
+    device='cuda',          # Device to use
+    no_crop=False,          # Whether to resize instead of crop
+    size=512,               # Target image size
+    verbose=True            # Print progress info
+)
+```
+
+**Returns:**
+- `pointer_memory_embeds`: Memory embeddings for pointer tokens
+- `pointer_positions`: 3D positions (height, width, depth)
+- `pts3d`: Raw 3D point cloud
+- `metadata`: Processing metadata
+
+**Usage:**
+```python
+from extract_pointer_memory import extract_pointer_memory
+from qwen_vl.model.point3r.point3r import Point3R
+
+# Load Point3R model
+point3r = Point3R.from_pretrained("path/to/checkpoint.pth")
+point3r = point3r.to('cuda').eval()
+
+# Extract memory
+pointer_data = extract_pointer_memory(
+    image_inputs=['image1.jpg', 'image2.jpg'],
+    point3r_model=point3r,
+)
+
+# Use with model
+outputs = model.generate(
+    **inputs,
+    pointer_memory_embeds=pointer_data['pointer_memory_embeds'],
+    pointer_positions=pointer_data['pointer_positions'],
+)
+```
 
 ---
 

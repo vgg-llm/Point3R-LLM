@@ -41,6 +41,8 @@ def loss_of_one_batch(
     point3r_tag=False,
     img_mask=None,
     inference=False,
+    image_embeds=None,
+    grid_thw=None,
 ):
     if len(batch) > 2:
         assert (
@@ -49,18 +51,21 @@ def loss_of_one_batch(
     if symmetrize_batch:
         batch = make_batch_symmetric(batch)
 
-    with torch.cuda.amp.autocast(enabled=not inference):
+    with torch.amp.autocast('cuda', enabled=not inference):
         if inference:
             if point3r_tag:
-                output = model(batch, point3r_tag=True)
+                output = model(batch, point3r_tag=True, image_embeds=image_embeds, grid_thw_images=grid_thw)
             else:
                 output = model(batch)
             preds, batch = output.ress, output.views
             result = dict(views=batch, pred=preds)
+            # NEW: Include pointer_aligned_image_embeds in result
+            if hasattr(output, 'pointer_aligned_image_embeds'):
+                result['pointer_aligned_image_embeds'] = output.pointer_aligned_image_embeds
             return result
         else:
             if point3r_tag:
-                output = model(batch, point3r_tag=True)
+                output = model(batch, point3r_tag=True, image_embeds=image_embeds, grid_thw_images=grid_thw)
             else:
                 output = model(batch)
             preds, batch = output.ress, output.views
@@ -72,12 +77,12 @@ def loss_of_one_batch(
     return result
 
 @torch.no_grad()
-def inference(groups, model, device, verbose=True):
+def inference(groups, model, device, image_embeds=None, grid_thw=None, verbose=True):
     ignore_keys = set(
         ["depthmap", "dataset", "label", "instance", "idx", "true_shape", "rng"]
     )
     for view in groups:
-        for name in view.keys():  
+        for name in view.keys():
             if name in ignore_keys:
                 continue
             if isinstance(view[name], tuple) or isinstance(view[name], list):
@@ -88,7 +93,16 @@ def inference(groups, model, device, verbose=True):
     if verbose:
         print(f">> Inference with model on {len(groups)} images")
 
-    res = loss_of_one_batch(groups, model, None, None, point3r_tag=True, inference=True)
+    res = loss_of_one_batch(
+        groups,
+        model,
+        None,
+        None,
+        point3r_tag=True,
+        inference=True,
+        image_embeds=image_embeds,
+        grid_thw=grid_thw
+    )
     result = to_cpu(res)
     return result
 

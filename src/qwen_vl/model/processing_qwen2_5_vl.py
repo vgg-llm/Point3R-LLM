@@ -352,10 +352,8 @@ class Qwen2_5_VLProcessorWithPoint3R(Qwen2_5_VLProcessor):
 
         ########## TODO: Fix this part properly
         if pointers is not None:
-            pointers_inputs = {pointers}
             pointer_num_tok = pointers.shape[0]
         else:
-            pointers_inputs = {}
             pointer_num_tok = None
         
         ###########
@@ -403,6 +401,6 @@ class Qwen2_5_VLProcessorWithPoint3R(Qwen2_5_VLProcessor):
 
         text_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
 
-        return BatchFeature(data={**text_inputs, **image_inputs, **videos_inputs, **pointers_inputs})
+        return BatchFeature(data={**text_inputs, **image_inputs, **videos_inputs})
 
 __all__ = ["Qwen2_5_VLProcessor", "Qwen2_5_VLProcessorWithPoint3R"]

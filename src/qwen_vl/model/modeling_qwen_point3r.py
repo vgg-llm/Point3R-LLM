@@ -8,7 +8,7 @@ from .modeling_qwen2_5_vl import (
     Qwen2_5_VLCausalLMOutputWithPast, Qwen2_5_VLConfig, 
     QWEN2_5_VL_INPUTS_DOCSTRING, _CONFIG_FOR_DOC
 )
-from .point3r.point3r import LocalMemory, Point3R  # Commented for testing
+from .point3r.point3r import LocalMemory, Point3R
 from transformers.generation import GenerationMixin
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
@@ -39,14 +39,6 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
 
         # Initialize weights and apply final processing
         self.post_init()
-    
-    # TODO: integrate Point3R memory properly into the pipeline
-    def _init_pointer_memory(self, config):
-        self.pointer_memory = Point3R(config.point3r_config)
-        raise NotImplementedError
-
-    def _retrieve_pointer_memory(self, pointer_image_embeds):
-        raise NotImplementedError
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
@@ -612,6 +604,8 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
         image_grid_thw=None,
         video_grid_thw=None,
         second_per_grid_ts=None,
+        pointer_memory_embeds=None,
+        pointer_positions=None,
         **kwargs,
     ):
         # Overwritten -- in specific circumstances we don't want to forward image inputs to the model
@@ -628,16 +622,22 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
             image_grid_thw=image_grid_thw,
             video_grid_thw=video_grid_thw,
             second_per_grid_ts=second_per_grid_ts,
+            pointer_memory_embeds=pointer_memory_embeds,
+            pointer_positions=pointer_positions,
             use_cache=use_cache,
             **kwargs,
         )
 
-        # Qwen2-5-VL position_ids are prepareed with rope_deltas in forward
+        # Qwen2-5-VL position_ids are prepared with rope_deltas in forward
         model_inputs["position_ids"] = None
 
         if cache_position[0] != 0:
+            # After the prefill phase, vision and pointer inputs should not be forwarded
+            # as they have already been processed and are stored in the KV cache
             model_inputs["pixel_values"] = None
             model_inputs["pixel_values_videos"] = None
+            model_inputs["pointer_memory_embeds"] = None
+            model_inputs["pointer_positions"] = None
 
         return model_inputs
 
