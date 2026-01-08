@@ -63,6 +63,18 @@ SCAN2CAP = {
     "tag": "3d"
 }
 
+SCAN2CAP_POINT3R = {
+    "annotation_path": "data/train/scan2cap_train_32frames_point3r.json",
+    "data_path": "data/media",
+    "tag": "3d"
+}
+
+SCAN2CAP_POINT3R_DEBUG = {
+    "annotation_path": "data/train/scan2cap_debug_32frames_point3r.json",
+    "data_path": "data/media",
+    "tag": "3d"
+}
+
 data_dict = {
     "cambrian_737k": CAMBRIAN_737K,
     "mp_doc": MP_DOC,
@@ -73,6 +85,8 @@ data_dict = {
     "scannet_det": SCANNET_DET,
     "scanrefer": SCANREFER,
     "scan2cap": SCAN2CAP,
+    "scan2cap_point3r": SCAN2CAP_POINT3R,
+    "scan2cap_point3r_debug": SCAN2CAP_POINT3R_DEBUG,
     "spar_234k": SPAR_234K,
     "llava_hound_64k": LLAVA_HOUND_64K,
 }

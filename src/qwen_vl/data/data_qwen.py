@@ -58,8 +58,8 @@ def preprocess_qwen_2_visual(
 ) -> Dict:
     roles = {"human": "user", "gpt": "assistant"}
     system_message = "You are a helpful assistant."
-    if visual_type not in ["image", "video"]:
-        raise ValueError("visual_type must be either 'image' or 'video'")
+    if visual_type not in ["image", "video", "pointer"]:
+        raise ValueError("visual_type must be either 'image', 'video', or 'pointer'")
 
     tokenizer = copy.deepcopy(tokenizer)
     chat_template = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
@@ -134,7 +134,7 @@ def preprocess_qwen_2_visual(
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
-    def __init__(self, tokenizer: transformers.PreTrainedTokenizer, data_args):
+    def __init__(self, tokenizer: transformers.PreTrainedTokenizer, data_args, processor=None):
         super(LazySupervisedDataset, self).__init__()
 
         dataset = data_args.dataset_use.split(",")
@@ -179,6 +179,7 @@ class LazySupervisedDataset(Dataset):
 
         print("Formatting inputs...Skip in lazy mode")
         self.tokenizer = tokenizer
+        self.processor = processor  # Store the processor for pointer token handling
         self.list_data_dict = list_data_dict
         self.data_args = data_args
         self.data_args.image_processor.max_pixels = data_args.max_pixels
@@ -475,6 +476,105 @@ class LazySupervisedDataset(Dataset):
                 video_grid_thw=torch.stack(grid_thw, dim=0),
                 second_per_grid_ts=second_per_grid_ts,
             )
+        elif "pointer_data" in sources[0]:
+            # Handle Point3R pointer memory data
+            pointer_data_path = sources[0]["pointer_data"]
+            data_folder = self.list_data_dict[i]["data_path"]
+            full_pointer_path = os.path.join(data_folder, pointer_data_path)
+
+            # Load pointer memory from file
+            pointer_data = torch.load(full_pointer_path, weights_only=True)
+            pointer_memory_embeds = pointer_data['pointer_memory_embeds']
+            pointer_positions = pointer_data['pointer_positions']
+
+            # The conversation contains a SINGLE <|pointer_pad|> token:
+            # "<|vision_start|><|pointer_pad|><|vision_end|>\nDescribe the object..."
+            #
+            # We need to EXPAND it to N <|pointer_pad|> tokens based on pointer_memory_embeds.shape[0]
+            # This is exactly what Qwen2_5_VLProcessorWithPoint3R does (lines 390-400)
+
+            num_pointer_tokens = pointer_memory_embeds.shape[0]
+
+            # Process conversations with pointer token expansion
+            sources_conv = copy.deepcopy([e["conversations"] for e in sources])
+
+            system_message = "You are a helpful assistant."
+            roles = {"human": "user", "gpt": "assistant"}
+
+            # Get pointer token (either from processor or define it here)
+            if self.processor is not None:
+                pointer_token = self.processor.pointer_token
+            else:
+                pointer_token = "<|pointer_pad|>"
+
+            tokenizer_copy = copy.deepcopy(self.tokenizer)
+            chat_template = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+            tokenizer_copy.chat_template = chat_template
+
+            input_ids, targets = [], []
+
+            for source in sources_conv:
+                # Adjust roles if needed
+                if roles.get(source[0].get("from", source[0].get("role")), "") != "user":
+                    source = source[1:]
+
+                input_id = []
+                target = []
+
+                # Add system message
+                input_id += tokenizer_copy.apply_chat_template(
+                    [{"role": "system", "content": system_message}]
+                )
+                target += [IGNORE_INDEX] * len(input_id)
+
+                # Process each conversation turn
+                for conv in source:
+                    role = conv.get("role", conv.get("from"))
+                    content = conv.get("content", conv.get("value"))
+                    role = roles.get(role, role)
+
+                    # EXPAND pointer token: single <|pointer_pad|> → N <|pointer_pad|>
+                    # This mimics what Qwen2_5_VLProcessorWithPoint3R does
+                    if pointer_token in content:
+                        content = content.replace(
+                            pointer_token,
+                            pointer_token * num_pointer_tokens
+                        )
+
+                    # Tokenize the expanded content
+                    conv_formatted = [{"role": role, "content": content}]
+                    encode_id = tokenizer_copy.apply_chat_template(conv_formatted)
+                    input_id += encode_id
+
+                    if role in ["user", "system"]:
+                        target += [IGNORE_INDEX] * len(encode_id)
+                    else:
+                        target_mask = encode_id.copy()
+                        target_mask[:3] = [IGNORE_INDEX] * 3
+                        target += target_mask
+
+                input_ids.append(input_id)
+                targets.append(target)
+
+            input_ids = torch.tensor(input_ids, dtype=torch.long)
+            targets = torch.tensor(targets, dtype=torch.long)
+
+            data_dict = dict(
+                input_ids=input_ids,
+                labels=targets,
+            )
+
+            # For pointer data, position_ids are standard sequential positions
+            position_ids = (
+                torch.arange(0, data_dict["input_ids"].size(1))
+                .view(1, -1)
+                .unsqueeze(0)
+                .expand(3, -1, -1)
+            )
+
+            # Store pointer memory for later use
+            pointer_memory_embeds_to_store = pointer_memory_embeds
+            pointer_positions_to_store = pointer_positions
         else:
             grid_thw_merged = None
             sources = copy.deepcopy([e["conversations"] for e in sources])
@@ -504,7 +604,11 @@ class LazySupervisedDataset(Dataset):
         elif "video" in self.list_data_dict[i]:
             data_dict["pixel_values_videos"] = video
             data_dict["video_grid_thw"] = grid_thw
-        
+        # pointer_data exist in the data
+        elif "pointer_data" in self.list_data_dict[i]:
+            data_dict["pointer_memory_embeds"] = pointer_memory_embeds_to_store
+            data_dict["pointer_positions"] = pointer_positions_to_store
+
         data_dict["tag"] = self.list_data_dict[i].get("tag", "2d")
         return data_dict
 
@@ -611,6 +715,19 @@ class DataCollatorForSupervisedDataset(object):
             batch["geometry_encoder_inputs"] = geometry_encoder_inputs
             assert len(set([instance["tag"] for instance in instances])) == 1, "all data in a batch should have the same tag"
             batch["tag"] = instances[0]["tag"]
+
+        if "pointer_memory_embeds" in instances[0]:
+            pointer_memory_embeds = [instance["pointer_memory_embeds"] for instance in instances]
+            # Concatenate along the first dimension (number of pointer tokens)
+            batch["pointer_memory_embeds"] = torch.cat(pointer_memory_embeds, dim=0)
+            assert len(set([instance["tag"] for instance in instances])) == 1, "all data in a batch should have the same tag"
+            batch["tag"] = instances[0]["tag"]
+
+        if "pointer_positions" in instances[0]:
+            pointer_positions = [instance["pointer_positions"] for instance in instances]
+            # Concatenate along the first dimension (number of pointer tokens)
+            batch["pointer_positions"] = torch.cat(pointer_positions, dim=0)
+        
         return batch
 
 
@@ -700,14 +817,16 @@ class FlattenedDataCollatorForSupervisedDataset(DataCollatorForSupervisedDataset
         if "geometry_encoder_inputs" in instances[0]:
             raise NotImplementedError("FlattenedDataCollatorForSupervisedDataset does not support geometry_encoder_inputs")
 
+        if "pointer_memory_embeds" in instances[0] or "pointer_positions" in instances[0]:
+            raise NotImplementedError("FlattenedDataCollatorForSupervisedDataset does not support pointer_memory_embeds")
         return batch
 
 
 def make_supervised_data_module(
-    tokenizer: transformers.PreTrainedTokenizer, data_args
+    tokenizer: transformers.PreTrainedTokenizer, data_args, processor=None
 ) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = LazySupervisedDataset(tokenizer=tokenizer, data_args=data_args)
+    train_dataset = LazySupervisedDataset(tokenizer=tokenizer, data_args=data_args, processor=processor)
     if data_args.data_flatten:
         data_collator = FlattenedDataCollatorForSupervisedDataset(tokenizer=tokenizer)
         return dict(

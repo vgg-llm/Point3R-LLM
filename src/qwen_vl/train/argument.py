@@ -19,6 +19,11 @@ class ModelArguments:
     fusion_num_layers: int = field(default=1)  # Number of layers in the cross-attention module when feature_fusion_method is "cross_attention"
     geometry_merger_type: str = field(default="mlp")  # Type of geometry feature merger ("mlp", "avg")
 
+    use_pointer_memory: bool = field(default=False)
+    use_preprocessed_input: bool = field(default=False)
+    point3r_model_path: str = field(default="./cache/point3r_512.pth")
+    pointer_memory_size: int = field(default=512)
+
 @dataclass
 class DataArguments:
     dataset_use: str = field(default="")

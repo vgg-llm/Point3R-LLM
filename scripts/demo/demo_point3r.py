@@ -467,18 +467,15 @@ def run_models(model,
     pointer_memory_embeds = pointer_data['pointer_memory_embeds'].to(model.device)
     pointer_positions = pointer_data['pointer_positions'].to(model.device)
 
-    # Use properly computed embeddings from extract_pointer_memory
-    pointer_aligned_image_embeds = pointer_data['pointer_memory_embeds']
-
     # Verify shapes match
-    assert pointer_aligned_image_embeds.shape[0] == pointer_positions.shape[0], \
-        f"Shape mismatch: embeds {pointer_aligned_image_embeds.shape} vs positions {pointer_positions.shape}"
+    assert pointer_memory_embeds.shape[0] == pointer_positions.shape[0], \
+        f"Shape mismatch: embeds {pointer_memory_embeds.shape} vs positions {pointer_positions.shape}"
 
     # Generate with pointer memory
     with torch.inference_mode():
         generated_ids_pointer = model.generate(
             **inputs_pointer,
-            pointer_memory_embeds=pointer_aligned_image_embeds,
+            pointer_memory_embeds=pointer_memory_embeds,
             pointer_positions=pointer_positions,
             max_new_tokens=128,
             do_sample=True,

@@ -8,7 +8,7 @@ from .modeling_qwen2_5_vl import (
     Qwen2_5_VLCausalLMOutputWithPast, Qwen2_5_VLConfig, 
     QWEN2_5_VL_INPUTS_DOCSTRING, _CONFIG_FOR_DOC
 )
-from .point3r.point3r import LocalMemory, Point3R
+from .point3r.point3r import LocalMemory, Point3R, Point3RConfig
 from transformers.generation import GenerationMixin
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
@@ -25,9 +25,8 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
         super().__init__(config)
         self.visual = Qwen2_5_VisionTransformerPretrainedModel._from_config(config.vision_config)
         
-        # Initialize geometry encoder if enabled
-        if getattr(config, 'use_geometry_encoder', False):
-            self._init_geometry_encoder(config)
+        if getattr(config, 'use_pointer_memory', False) and not getattr(config, 'use_preprocessed_input', False):
+            self._init_point3r_memory(config)
         
         self.model = Qwen2_5_VLModel(config)
         self.vocab_size = config.vocab_size
@@ -40,12 +39,42 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
         # Initialize weights and apply final processing
         self.post_init()
 
+    def _init_point3r_memory(self, config):
+        inf = float('inf')
+        point3r_config = Point3RConfig(
+            freeze='encoder', 
+            pos_embed='RoPE100', 
+            pos_embed_3d='RoPE3D100', 
+            pose_head=True, 
+            patch_embed_cls='ManyAR_PatchEmbed', 
+            img_size=(512, 512), 
+            head_type='dpt', 
+            output_mode='pts3d+pose', 
+            depth_mode=('exp', -inf, inf), 
+            conf_mode=('exp', 1, inf), 
+            pose_mode=('exp', -inf, inf), 
+            enc_embed_dim=1024, 
+            enc_depth=24, 
+            enc_num_heads=16, 
+            dec_embed_dim=768, 
+            dec_depth=12, 
+            dec_num_heads=12, 
+            landscape_only=False
+        )
+        self.point3r_model = Point3R(point3r_config)
+        # TODO: proper device handling for point3r
+        # point3r_model = point3r_model.to("cuda")
+        self.point3r_model.eval()
+
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
-        pointer_memory_path = kwargs.pop("pointer_memory_path", None)
+        point3r_model_path = kwargs.pop("point3r_model_path", None)
         model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
-        if pointer_memory_path:
-            model.pointer_memory.load_model(pointer_memory_path)
+        if point3r_model_path:
+            model.point3r_model = Point3R.from_pretrained(point3r_model_path)
+            # TODO: proper device handling for point3r
+            # model.point3r_model = model.point3r_model.to("cuda")
+            model.point3r_model.eval()
         return model
 
     def get_input_embeddings(self):
@@ -762,6 +791,11 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
                 elif key == "pointer_memory_embeds":
                     # Each pointer token corresponds to one feature embedding
                     # pointer_memory_embeds.shape[0] is sum(num_pointer_tokens for samples)
+                    lengths = list(pointer_nums)
+                    dict_to_expand[key] = _repeat_interleave_samples(
+                        dict_to_expand[key], lengths=lengths, repeat_times=expand_size
+                    )
+                elif key == "pointer_positions":
                     lengths = list(pointer_nums)
                     dict_to_expand[key] = _repeat_interleave_samples(
                         dict_to_expand[key], lengths=lengths, repeat_times=expand_size
