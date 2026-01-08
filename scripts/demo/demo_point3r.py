@@ -118,7 +118,12 @@ def main():
         processed_batch = processor.image_processor(images=batch_images, min_pixels=min_pixels, max_pixels=max_pixels)
 
         with torch.inference_mode():
+            # Get model device
+            model_device = next(model.visual.parameters()).device
+
+            # Move tensors to same device as model (IMPORTANT: reassign the tensor!)
             pixel_values = processed_batch.pixel_values.type(model.visual.dtype)
+            pixel_values = pixel_values.to(model_device)
             grid_thw = processed_batch.image_grid_thw
 
             # print(f'Batch {i//batch_size + 1}: pixel_values shape = {pixel_values.shape}')
@@ -360,7 +365,12 @@ def preprocess_images(
         processed_batch = processor.image_processor(images=batch_images, min_pixels=min_pixels, max_pixels=max_pixels)
 
         with torch.inference_mode():
+            # Get model device
+            model_device = next(model.visual.parameters()).device
+
+            # Move tensors to same device as model (IMPORTANT: reassign the tensor!)
             pixel_values = processed_batch.pixel_values.type(model.visual.dtype)
+            pixel_values = pixel_values.to(model_device)
             grid_thw = processed_batch.image_grid_thw
 
             # print(f'Batch {i//batch_size + 1}: pixel_values shape = {pixel_values.shape}')
