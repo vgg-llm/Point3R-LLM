@@ -62,6 +62,9 @@ def loss_of_one_batch(
             # NEW: Include pointer_aligned_image_embeds in result
             if hasattr(output, 'pointer_aligned_image_embeds'):
                 result['pointer_aligned_image_embeds'] = output.pointer_aligned_image_embeds
+            # NEW: Include pos_decode_memory in result
+            if hasattr(output, 'pos_decode_memory'):
+                result['pos_decode_memory'] = output.pos_decode_memory
             return result
         else:
             if point3r_tag:

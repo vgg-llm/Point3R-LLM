@@ -11,7 +11,6 @@ from PIL import Image
 from PIL.ImageOps import exif_transpose
 import torchvision.transforms as tvf
 import sys
-import os
 
 # Add src to path for imports
 sys.path.insert(0, 'src')
@@ -205,55 +204,6 @@ def extract_pointer_memory(
         verbose=verbose
     )
 
-    # Extract 3D points from predictions
-    pts3ds = [output["pts3d_in_other_view"].cpu() for output in outputs["pred"]]
-
-    if verbose:
-        print(f"Point3R inference complete. Extracted {len(pts3ds)} point clouds.")
-
-    # For single image, use the first prediction
-    # For multiple images, you might want to aggregate or use specific views
-    pts3d = pts3ds[0] if len(pts3ds) > 0 else None
-
-    if pts3d is None:
-        raise ValueError("Point3R inference did not produce valid 3D points")
-
-    # Extract memory features and positions
-    # pts3d shape: (batch_size, height, width, 3) where last dim is (x, y, z)
-    bs, img_h, img_w, _ = pts3d.shape
-
-    # Downsample to patch-level positions (matching Point3R's 16x16 patches)
-    img_pos_len_h = img_h // 16
-    img_pos_len_w = img_w // 16
-
-    # Average 3D positions over each 16x16 patch
-    img_pos = pts3d.permute(0, 3, 1, 2)  # (bs, 3, h, w)
-    img_pos = img_pos.unfold(2, 16, 16)  # (bs, 3, h_patches, w, 16)
-    img_pos = img_pos.unfold(3, 16, 16)  # (bs, 3, h_patches, w_patches, 16, 16)
-    img_pos = img_pos.reshape(bs, 3, img_pos_len_h, img_pos_len_w, -1).mean(dim=-1)
-    img_pos = img_pos.permute(0, 2, 3, 1).reshape(bs, -1, 3)  # (bs, num_patches, 3)
-
-    # For pointer positions: convert (x, y, z) to (height, width, depth) indices
-    # Normalize coordinates to integer grid positions
-    num_patches = img_pos.shape[1]
-
-    # Create height and width grid indices
-    h_indices = torch.arange(img_pos_len_h).view(-1, 1).expand(-1, img_pos_len_w).flatten()
-    w_indices = torch.arange(img_pos_len_w).view(1, -1).expand(img_pos_len_h, -1).flatten()
-
-    # Use z-coordinate (depth) directly, normalized to reasonable range
-    z_coords = img_pos[0, :, 2]  # (num_patches,)
-
-    # Normalize depth to integer indices (scale to a reasonable range, e.g., 0-100)
-    z_min, z_max = z_coords.min(), z_coords.max()
-    if z_max > z_min:
-        d_indices = ((z_coords - z_min) / (z_max - z_min) * 100).long()
-    else:
-        d_indices = torch.zeros_like(z_coords).long()
-
-    # Combine into pointer_positions (num_pointers, 3) where dims are (h, w, d)
-    pointer_positions = torch.stack([h_indices, w_indices, d_indices], dim=1)
-
     # Extract pointer_aligned_image_embeds from Point3R outputs
     # This is now returned by Point3R's forward pass
     if 'pointer_aligned_image_embeds' in outputs and outputs['pointer_aligned_image_embeds'] is not None:
@@ -263,11 +213,13 @@ def extract_pointer_memory(
         if isinstance(pointer_aligned_image_embeds, list):
             # For demo, we typically use the last frame's embeddings
             # Or concatenate all frames
-            pointer_aligned_image_embeds = pointer_aligned_image_embeds[-1]  # Take last frame
+            print(f'{len(pointer_aligned_image_embeds)} samples')
+            pointer_aligned_image_embeds = pointer_aligned_image_embeds[-1]  # Take last sample's
             # Alternative: pointer_aligned_image_embeds = torch.cat(pointer_aligned_image_embeds, dim=1)
 
         # Ensure shape is (num_patches, 2048)
         if pointer_aligned_image_embeds.dim() == 3:
+            print(f'shape: {pointer_aligned_image_embeds.shape}')
             # Shape: (bs, num_patches, 2048) → (num_patches, 2048)
             pointer_aligned_image_embeds = pointer_aligned_image_embeds[0]
 
@@ -277,42 +229,71 @@ def extract_pointer_memory(
         if verbose:
             print(f"Extracted pointer_aligned_image_embeds from Point3R: {pointer_aligned_image_embeds.shape}")
     else:
-        # Fallback to placeholder if Point3R didn't return it
-        print("Warning: Point3R did not return pointer_aligned_image_embeds, using placeholder")
+        raise ValueError
 
-        # Get hidden dimension from the model (typically 2048 for Qwen2.5-VL-3B)
-        hidden_dim = 2048  # Qwen2.5-VL-3B hidden size
+    # Use pos_decode_memory from Point3R outputs if available (for merged memory)
+    if 'pos_decode_memory' in outputs and outputs['pos_decode_memory'] is not None:
+        pos_decode_memory = outputs['pos_decode_memory']
+        
+        # Handle list format (from merge mode with variable lengths)
+        if isinstance(pos_decode_memory, list):
+            pos_decode_memory = pos_decode_memory[-1]  # Take last sample's
+            # Alternative: pos_decode_memory = torch.cat(pos_decode_memory, dim=1)
 
-        # Create simple position-encoded embeddings as placeholder
-        pointer_memory_embeds = torch.zeros(num_patches, hidden_dim)
+        # Handle list format (from merge mode with variable lengths per batch)
+        if pos_decode_memory.dim() == 3:
+            # Shape: (bs, num_patches, 3) → (num_patches, 3)
+            pos_decode_memory = pos_decode_memory[0]
 
-        # Encode 3D positions into the embeddings (simple encoding)
-        position_encoding = torch.cat([
-            img_pos[0].repeat(1, hidden_dim // 6)[:, :hidden_dim // 3],  # x, y, z positions
-            torch.sin(img_pos[0] * 10).repeat(1, hidden_dim // 6)[:, :hidden_dim // 3],  # sin encoding
-            torch.cos(img_pos[0] * 10).repeat(1, hidden_dim // 6)[:, :hidden_dim // 3],  # cos encoding
-        ], dim=1)
+        if pos_decode_memory is not None:
+            # pos_decode_memory shape: (num_memory_points, 3) where 3 is (x, y, z)
+            # Quantize xyz values to integers from 0 to 32
+            xyz_positions = pos_decode_memory.cpu()
 
-        pointer_memory_embeds[:, :position_encoding.shape[1]] = position_encoding
+            # Get min/max for each dimension
+            x_min, x_max = xyz_positions[:, 0].min(), xyz_positions[:, 0].max()
+            y_min, y_max = xyz_positions[:, 1].min(), xyz_positions[:, 1].max()
+            z_min, z_max = xyz_positions[:, 2].min(), xyz_positions[:, 2].max()
+
+            # Quantize each dimension to 0-32 range
+            if x_max > x_min:
+                x_quantized = ((xyz_positions[:, 0] - x_min) / (x_max - x_min) * 32).long().clamp(0, 32)
+            else:
+                x_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
+
+            if y_max > y_min:
+                y_quantized = ((xyz_positions[:, 1] - y_min) / (y_max - y_min) * 32).long().clamp(0, 32)
+            else:
+                y_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
+
+            if z_max > z_min:
+                z_quantized = ((xyz_positions[:, 2] - z_min) / (z_max - z_min) * 32).long().clamp(0, 32)
+            else:
+                z_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
+
+            # Overwrite pointer_positions with quantized xyz values
+            pointer_positions = torch.stack([x_quantized, y_quantized, z_quantized], dim=1)
+
+            if verbose:
+                print(f"Using pos_decode_memory from Point3R outputs")
+                print(f"  - Number of memory points: {xyz_positions.shape[0]}")
+                print(f"  - Original xyz ranges: x[{x_min:.3f}, {x_max:.3f}], "
+                      f"y[{y_min:.3f}, {y_max:.3f}], z[{z_min:.3f}, {z_max:.3f}]")
+                print(f"  - Quantized to [0, 32] range")
 
     if verbose:
         print(f"Extracted pointer memory:")
-        print(f"  - Number of pointers: {num_patches}")
+        print(f"  - Number of pointers: {pointer_memory_embeds.shape[0]}")
         print(f"  - Memory embeddings shape: {pointer_memory_embeds.shape}")
         print(f"  - Pointer positions shape: {pointer_positions.shape}")
-        print(f"  - Position ranges: h[{h_indices.min()}-{h_indices.max()}], "
-              f"w[{w_indices.min()}-{w_indices.max()}], d[{d_indices.min()}-{d_indices.max()}]")
+        if 'pos_decode_memory' in outputs and outputs['pos_decode_memory'] is not None:
+            print(f"  - Position ranges: x[{pointer_positions[:, 0].min()}-{pointer_positions[:, 0].max()}], "
+                  f"y[{pointer_positions[:, 1].min()}-{pointer_positions[:, 1].max()}], "
+                  f"z[{pointer_positions[:, 2].min()}-{pointer_positions[:, 2].max()}]")
 
     return {
         'pointer_memory_embeds': pointer_memory_embeds,
         'pointer_positions': pointer_positions,
-        'pts3d': pts3d,
-        'metadata': {
-            'num_views': len(views),
-            'image_size': (img_h, img_w),
-            'num_patches': (img_pos_len_h, img_pos_len_w),
-            'depth_range': (z_min.item(), z_max.item()),
-        }
     }
 
 

@@ -53,6 +53,7 @@ class ARCroco3DStereoOutput(ModelOutput):
     ress: Optional[List[Any]] = None
     views: Optional[List[Any]] = None
     pointer_aligned_image_embeds: Optional[torch.Tensor] = None
+    pos_decode_memory: Optional[torch.Tensor] = None
 
 def strip_module(state_dict):
     """
@@ -808,10 +809,11 @@ class Point3R(CroCoNet):
                     if pointer_aligned_image_embeds_list is not None:
                         image_feat_merge = new_image_j[mask_merge]
                         embed_dim_image = image_embeds_j.shape[-1]  # Dynamically get dimension from input
-                        image_feat_sum = torch.zeros((num_merge, embed_dim_image), device=image_embeds_j.device)
+                        image_feat_sum = torch.zeros((num_merge, embed_dim_image), device=image_embeds_j.device,
+                                                     dtype=image_feat_merge.dtype)
                         image_feat_sum.index_add_(0, inverse_indices, image_feat_merge)
                         image_feat_avg = image_feat_sum / count
-                        image_feat_avg = image_feat_avg.float()
+                        image_feat_avg = image_feat_avg.bfloat16()
                         image_embeds_j[unique_indices] = image_feat_avg
 
                 if mask_add.sum() > 0:
@@ -962,7 +964,7 @@ class Point3R(CroCoNet):
                     pointer_aligned_image_embeds=pointer_aligned_image_embeds,
                 )
 
-        return ress, views, pointer_aligned_image_embeds
+        return ress, views, pointer_aligned_image_embeds, pos_decode_memory
 
     def _forward(self, views, point3r_tag=False):
         shape, feat_ls, pos = self._encode_views(views)
@@ -1043,7 +1045,7 @@ class Point3R(CroCoNet):
         return ress, views
 
     def forward(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None):
-        ress, views, pointer_aligned_image_embeds = self._forward_merge(
+        ress, views, pointer_aligned_image_embeds, pos_decode_memory = self._forward_merge(
             views,
             point3r_tag=point3r_tag,
             image_embeds=image_embeds,
@@ -1052,7 +1054,8 @@ class Point3R(CroCoNet):
         return ARCroco3DStereoOutput(
             ress=ress,
             views=views,
-            pointer_aligned_image_embeds=pointer_aligned_image_embeds
+            pointer_aligned_image_embeds=pointer_aligned_image_embeds,
+            pos_decode_memory=pos_decode_memory
         )
         # stage1
         # ress, views = self._forward(views, point3r_tag=point3r_tag)
