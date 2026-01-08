@@ -9,15 +9,16 @@ This demonstrates:
 
 import torch
 import sys
+from pathlib import Path
 sys.path.insert(0, 'src')
 
 from qwen_vl.model.modeling_qwen_point3r import Qwen2_5_VLForConditionalGenerationWithPoint3R
 from qwen_vl.model.processing_qwen2_5_vl import Qwen2_5_VLProcessorWithPoint3R
 from transformers import AutoProcessor
 from qwen_vl.model.point3r.point3r import Point3R
+from qwen_vl.model.point3r.extract_memory import extract_pointer_memory
 from qwen_vl_utils import process_vision_info
 from time import time
-from extract_pointer_memory import extract_pointer_memory
 
 
 def main():
@@ -248,7 +249,8 @@ def main():
     print(f"Total runtime: {stage2_end - stage0_start:.2f} seconds")
     print("="*70)
 
-def preprocess_images(pointer_data_path = "./data/demo_data/pointer_data.pt"):
+def load_models(load_point3r=True, device=None):
+
     # stage 0, Model loading runtime measurement
     print("\n" + "="*70)
     print(f"Stage 0 (Model Loading)")
@@ -261,7 +263,7 @@ def preprocess_images(pointer_data_path = "./data/demo_data/pointer_data.pt"):
         "Qwen/Qwen2.5-VL-3B-Instruct",
         cache_dir="./cache",
         torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
-        device_map="auto",  # Automatically distribute model across available devices
+        device_map="auto" if device is None else device,  # Automatically distribute model across available devices
         low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
     )
 
@@ -294,16 +296,29 @@ def preprocess_images(pointer_data_path = "./data/demo_data/pointer_data.pt"):
 
     ##############################################################################################
 
-    # Load Point3R model for memory extraction
-    print("Loading Point3R model...")
-    point3r_model = Point3R.from_pretrained("./cache/point3r_512.pth")
-    point3r_model = point3r_model.to("cuda")
-    point3r_model.eval()
+    if load_point3r:
+        # Load Point3R model for memory extraction
+        print("Loading Point3R model...")
+        point3r_model = Point3R.from_pretrained("./cache/point3r_512.pth")
+        point3r_model = point3r_model.to("cuda" if device is None else device)
+        point3r_model.eval()
 
-    stage0_end = time()
-    print(f"Stage 0 (Model Loading) runtime: {stage0_end - stage0_start:.2f} seconds")
+        stage0_end = time()
+        print(f"Stage 0 (Model Loading) runtime: {stage0_end - stage0_start:.2f} seconds")
 
-    ##############################################################################################
+        return model, processor, min_pixels, max_pixels, point3r_model
+    else:
+        return model, processor, min_pixels, max_pixels, None
+
+def preprocess_images(
+        model,
+        processor,
+        min_pixels,
+        max_pixels,
+        point3r_model,
+        input_images_dir = "./data/demo_data/demo_photos/", 
+        pointer_data_path = "./data/demo_data/pointer_data.pt"
+    ):
 
     # Example 2: Using the model with pointer memory
     print("\n" + "="*70)
@@ -313,19 +328,19 @@ def preprocess_images(pointer_data_path = "./data/demo_data/pointer_data.pt"):
     # stage 1, Image feature pre-processing runtime measurement
     stage1_start = time()
 
-    # vision_message = [
-    #     {
-    #         "role": "user",
-    #         "content": [
-    #             {"type": "image","image": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"},
-    #         ],
-    #     }
-    # ]
+    # Compute sorted list of JPG image paths
+    image_paths = sorted(Path(input_images_dir).glob("*.jpg"))
+    # Uniformly sample 32 paths
+    sample_ct = 32
+    if len(image_paths) > sample_ct:
+        step = len(image_paths) / sample_ct
+        image_paths = [image_paths[int(i * step)] for i in range(sample_ct)]
+
     vision_message = [
         {
             "role": "user",
             "content": [
-                {"type": "image","image": f"./data/demo_data/demo_photos/demo_0{i}.jpg"} for i in range(5)
+                {"type": "image","image": str(img_path)} for img_path in image_paths
             ],
         }
     ]
@@ -401,58 +416,12 @@ def preprocess_images(pointer_data_path = "./data/demo_data/pointer_data.pt"):
     torch.save(pointer_data, pointer_data_path)
     print("Pointer data saved successfully!")
 
-
-def run_models(pointer_data_path = "./data/demo_data/pointer_data.pt"):
-    # stage 0, Model loading runtime measurement
-    print("\n" + "="*70)
-    print(f"Stage 0 (Model Loading)")
-    print("="*70)
-    stage0_start = time()
-
-    # Load model with memory-efficient settings
-    print("Loading model...")
-    model = Qwen2_5_VLForConditionalGenerationWithPoint3R.from_pretrained(
-        "Qwen/Qwen2.5-VL-3B-Instruct",
-        cache_dir="./cache",
-        torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
-        device_map="auto",  # Automatically distribute model across available devices
-        low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
-    )
-
-    # Load the base processor first
-    print("Loading processor...")
-    min_pixels = 256 * 28 * 28
-    max_pixels = 1280 * 28 * 28
-    base_processor = AutoProcessor.from_pretrained(
-        "Qwen/Qwen2.5-VL-3B-Instruct", use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
-    )
-
-    # Create Point3R processor with pointer token support
-    processor = Qwen2_5_VLProcessorWithPoint3R(
-        image_processor=base_processor.image_processor,
-        tokenizer=base_processor.tokenizer,
-        chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
-    )
-
-    ##################### This part should be inside Qwen2_5_VLForConditionalGenerationWithPoint3R 
-
-    # Store pointer token ID in model config for proper processing
-    model.config.pointer_token_id = processor.pointer_token_id
-    model.pointer_token_id = processor.pointer_token_id
-
-    # Resize token embeddings to accommodate new pointer token
-    model.resize_token_embeddings(len(processor.tokenizer))
-
-    print(f"\tPointer token: {processor.pointer_token}")
-    print(f"\tPointer token ID: {processor.pointer_token_id}")
-
-    ##############################################################################################
-
-    stage0_end = time()
-    print(f"Stage 0 (Model Loading) runtime: {stage0_end - stage0_start:.2f} seconds")
+def run_models(model,
+        processor,
+        pointer_data_path = "./data/demo_data/pointer_data.pt"
+    ):
 
     # Load pointer data from file (uncomment to load instead of computing)
-    pointer_data_path = "./data/demo_data/pointer_data.pt"
     print(f"\nLoading pointer data from {pointer_data_path}...")
     pointer_data = torch.load(pointer_data_path, weights_only=True)
     print("Pointer data loaded successfully!")
@@ -518,8 +487,11 @@ def run_models(pointer_data_path = "./data/demo_data/pointer_data.pt"):
 
     print("\n" + "="*70)
     print("Demo completed!")
-    print(f"Total runtime: {stage2_end - stage0_start:.2f} seconds")
     print("="*70)
 
 if __name__=='__main__':
-    run_models()
+    input_images_dir = "./data/demo_data/demo_photos/"
+    pointer_data_path = "./data/demo_data/pointer_data.pt"
+    model, processor, min_pixels, max_pixels, point3r_model= load_models()
+    preprocess_images(model, processor, min_pixels, max_pixels, point3r_model, input_images_dir, pointer_data_path)
+    run_models(model, processor, pointer_data_path)

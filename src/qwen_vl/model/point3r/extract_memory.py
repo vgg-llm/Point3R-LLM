@@ -12,11 +12,8 @@ from PIL.ImageOps import exif_transpose
 import torchvision.transforms as tvf
 import sys
 
-# Add src to path for imports
-sys.path.insert(0, 'src')
-
-from qwen_vl.model.point3r.inference import inference
-from qwen_vl.model.point3r.point3r import LocalMemory
+from .inference import inference
+from .point3r import LocalMemory
 
 # Image normalization (same as Point3R)
 ImgNorm = tvf.Compose([tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
