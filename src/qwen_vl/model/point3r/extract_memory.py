@@ -122,8 +122,12 @@ def extract_pointer_memory(
                                       Memory embeddings for each pointer token
             - 'pointer_positions': Tensor of shape (num_pointers, 3)
                                   3D positions (height, width, depth) for each pointer
-            - 'pts3d': Raw 3D point cloud from Point3R (for debugging)
-            - 'metadata': Additional metadata from Point3R processing
+            - 'camera_poses': (Optional) Tensor of shape (num_frames, 7)
+                             Camera poses for each frame in format [tx, ty, tz, qw, qx, qy, qz]
+                             Only present if the Point3R model has pose_head=True
+                             Translation: [tx, ty, tz] - absolute position in 3D space
+                             Rotation: [qw, qx, qy, qz] - unit quaternion (real part first)
+                             Coordinate convention: OpenCV camera-to-world transformation
 
     Example:
         >>> from qwen_vl_utils import process_vision_info
@@ -231,7 +235,7 @@ def extract_pointer_memory(
     # Use pos_decode_memory from Point3R outputs if available (for merged memory)
     if 'pos_decode_memory' in outputs and outputs['pos_decode_memory'] is not None:
         pos_decode_memory = outputs['pos_decode_memory']
-        
+
         # Handle list format (from merge mode with variable lengths)
         if isinstance(pos_decode_memory, list):
             pos_decode_memory = pos_decode_memory[-1]  # Take last sample's
@@ -247,36 +251,111 @@ def extract_pointer_memory(
             # Quantize xyz values to integers from 0 to 32
             xyz_positions = pos_decode_memory.cpu()
 
-            # Get min/max for each dimension
-            x_min, x_max = xyz_positions[:, 0].min(), xyz_positions[:, 0].max()
-            y_min, y_max = xyz_positions[:, 1].min(), xyz_positions[:, 1].max()
-            z_min, z_max = xyz_positions[:, 2].min(), xyz_positions[:, 2].max()
+            # # Get min/max for each dimension
+            # x_min, x_max = xyz_positions[:, 0].min(), xyz_positions[:, 0].max()
+            # y_min, y_max = xyz_positions[:, 1].min(), xyz_positions[:, 1].max()
+            # z_min, z_max = xyz_positions[:, 2].min(), xyz_positions[:, 2].max()
 
-            # Quantize each dimension to 0-32 range
-            if x_max > x_min:
-                x_quantized = ((xyz_positions[:, 0] - x_min) / (x_max - x_min) * 32).long().clamp(0, 32)
-            else:
-                x_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
+            # # Quantize each dimension to 0-32 range
+            # if x_max > x_min:
+            #     x_quantized = ((xyz_positions[:, 0] - x_min) / (x_max - x_min) * 32).long().clamp(0, 32)
+            # else:
+            #     x_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
 
-            if y_max > y_min:
-                y_quantized = ((xyz_positions[:, 1] - y_min) / (y_max - y_min) * 32).long().clamp(0, 32)
-            else:
-                y_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
+            # if y_max > y_min:
+            #     y_quantized = ((xyz_positions[:, 1] - y_min) / (y_max - y_min) * 32).long().clamp(0, 32)
+            # else:
+            #     y_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
 
-            if z_max > z_min:
-                z_quantized = ((xyz_positions[:, 2] - z_min) / (z_max - z_min) * 32).long().clamp(0, 32)
-            else:
-                z_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
+            # if z_max > z_min:
+            #     z_quantized = ((xyz_positions[:, 2] - z_min) / (z_max - z_min) * 32).long().clamp(0, 32)
+            # else:
+            #     z_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
 
-            # Overwrite pointer_positions with quantized xyz values
-            pointer_positions = torch.stack([x_quantized, y_quantized, z_quantized], dim=1)
+            # # Overwrite pointer_positions with quantized xyz values
+            # pointer_positions = torch.stack([x_quantized, y_quantized, z_quantized], dim=1)
+
+            pointer_positions = xyz_positions
 
             if verbose:
                 print(f"Using pos_decode_memory from Point3R outputs")
                 print(f"  - Number of memory points: {xyz_positions.shape[0]}")
-                print(f"  - Original xyz ranges: x[{x_min:.3f}, {x_max:.3f}], "
-                      f"y[{y_min:.3f}, {y_max:.3f}], z[{z_min:.3f}, {z_max:.3f}]")
-                print(f"  - Quantized to [0, 32] range")
+                print(f"  - World xyz ranges: x[{xyz_positions[:, 0].min():.3f}, {xyz_positions[:, 0].max():.3f}], "
+                      f"y[{xyz_positions[:, 1].min():.3f}, {xyz_positions[:, 1].max():.3f}], "
+                      f"z[{xyz_positions[:, 2].min():.3f}, {xyz_positions[:, 2].max():.3f}]")
+
+    # Extract camera poses from Point3R predictions (if pose_head=True)
+    camera_poses = []
+    if 'pred' in outputs and outputs['pred'] is not None:
+        for i, pred in enumerate(outputs['pred']):
+            if 'camera_pose' in pred and pred['camera_pose'] is not None:
+                # camera_pose shape: (batch_size, 7) where 7 = [tx, ty, tz, qw, qx, qy, qz]
+                pose = pred['camera_pose']
+                if pose.dim() == 2:
+                    # Take first batch element if batched
+                    pose = pose[0]  # Shape: (7,)
+                camera_poses.append(pose.cpu())
+
+        if len(camera_poses) > 0:
+            # Stack all camera poses: (num_frames, 7)
+            camera_poses = torch.stack(camera_poses, dim=0)
+
+            if verbose:
+                print(f"Extracted camera poses:")
+                print(f"  - Number of frames: {camera_poses.shape[0]}")
+                print(f"  - Pose format: [tx, ty, tz, qw, qx, qy, qz]")
+                print(f"  - Translation ranges: x[{camera_poses[:, 0].min():.3f}, {camera_poses[:, 0].max():.3f}], "
+                      f"y[{camera_poses[:, 1].min():.3f}, {camera_poses[:, 1].max():.3f}], "
+                      f"z[{camera_poses[:, 2].min():.3f}, {camera_poses[:, 2].max():.3f}]")
+
+                # Print first camera pose
+                first_pose = camera_poses[0]
+                print(f"  - First camera pose:")
+                print(f"    Translation: [{first_pose[0]:.4f}, {first_pose[1]:.4f}, {first_pose[2]:.4f}]")
+                print(f"    Rotation (quat): [{first_pose[3]:.4f}, {first_pose[4]:.4f}, {first_pose[5]:.4f}, {first_pose[6]:.4f}]")
+
+                # Print last camera pose if there's more than one frame
+                if camera_poses.shape[0] > 1:
+                    last_pose = camera_poses[-1]
+                    print(f"  - Last camera pose:")
+                    print(f"    Translation: [{last_pose[0]:.4f}, {last_pose[1]:.4f}, {last_pose[2]:.4f}]")
+                    print(f"    Rotation (quat): [{last_pose[3]:.4f}, {last_pose[4]:.4f}, {last_pose[5]:.4f}, {last_pose[6]:.4f}]")
+
+            # Transform pointer_positions using the first frame's camera pose
+            if pointer_positions is not None:
+                from .utils.camera import pose_encoding_to_camera
+
+                # Convert first frame's camera pose (c2w) to camera matrix
+                first_pose = camera_poses[0:1]  # Shape: (1, 7)
+                c2w_matrix = pose_encoding_to_camera(first_pose, pose_encoding_type='absT_quaR')  # Shape: (1, 4, 4)
+                c2w_matrix = c2w_matrix[0]  # Shape: (4, 4)
+
+                # We want to transform world coordinates to first camera coordinates
+                # So we need the inverse: w2c = inv(c2w)
+                w2c_matrix = torch.inverse(c2w_matrix)  # Shape: (4, 4)
+
+                # pointer_positions is continuous xyz from pos_decode_memory
+                xyz_world = pointer_positions.float()  # Shape: (num_points, 3)
+
+                # Convert to homogeneous coordinates
+                ones = torch.ones(xyz_world.shape[0], 1)
+                xyz_world_homogeneous = torch.cat([xyz_world, ones], dim=1)  # Shape: (num_points, 4)
+
+                # Transform to first camera frame
+                xyz_cam_homogeneous = (w2c_matrix @ xyz_world_homogeneous.T).T  # Shape: (num_points, 4)
+                pointer_positions = xyz_cam_homogeneous[:, :3]  # Shape: (num_points, 3)
+
+                if verbose:
+                    print(f"Transformed pointer positions to first camera frame")
+                    print(f"  - Camera xyz ranges: x[{pointer_positions[:, 0].min():.3f}, {pointer_positions[:, 0].max():.3f}], "
+                          f"y[{pointer_positions[:, 1].min():.3f}, {pointer_positions[:, 1].max():.3f}], "
+                          f"z[{pointer_positions[:, 2].min():.3f}, {pointer_positions[:, 2].max():.3f}]")
+        else:
+            camera_poses = None
+            if verbose:
+                print(f"No camera poses found (pose_head may be disabled)")
+    else:
+        camera_poses = None
 
     if verbose:
         print(f"Extracted pointer memory:")
@@ -284,14 +363,20 @@ def extract_pointer_memory(
         print(f"  - Memory embeddings shape: {pointer_memory_embeds.shape}")
         print(f"  - Pointer positions shape: {pointer_positions.shape}")
         if 'pos_decode_memory' in outputs and outputs['pos_decode_memory'] is not None:
-            print(f"  - Position ranges: x[{pointer_positions[:, 0].min()}-{pointer_positions[:, 0].max()}], "
-                  f"y[{pointer_positions[:, 1].min()}-{pointer_positions[:, 1].max()}], "
-                  f"z[{pointer_positions[:, 2].min()}-{pointer_positions[:, 2].max()}]")
+            print(f"  - Final position ranges: x[{pointer_positions[:, 0].min():.3f}, {pointer_positions[:, 0].max():.3f}], "
+                  f"y[{pointer_positions[:, 1].min():.3f}, {pointer_positions[:, 1].max():.3f}], "
+                  f"z[{pointer_positions[:, 2].min():.3f}, {pointer_positions[:, 2].max():.3f}]")
 
-    return {
+    result = {
         'pointer_memory_embeds': pointer_memory_embeds,
         'pointer_positions': pointer_positions,
     }
+
+    # Add camera poses if available
+    if camera_poses is not None:
+        result['camera_poses'] = camera_poses
+
+    return result
 
 
 if __name__ == "__main__":
@@ -325,4 +410,14 @@ if __name__ == "__main__":
         pointer_memory_embeds=pointer_data['pointer_memory_embeds'],
         pointer_positions=pointer_data['pointer_positions'],
     )
+
+    # Access camera poses (if pose_head=True)
+    if 'camera_poses' in pointer_data:
+        camera_poses = pointer_data['camera_poses']  # Shape: (num_frames, 7)
+        # Each pose: [tx, ty, tz, qw, qx, qy, qz]
+
+        # Convert to 4x4 camera-to-world matrices
+        from src.qwen_vl.model.point3r.utils.camera import pose_encoding_to_camera
+        c2w_matrices = pose_encoding_to_camera(camera_poses, pose_encoding_type='absT_quaR')
+        # Shape: (num_frames, 4, 4) - OpenCV camera-to-world transformations
     """)

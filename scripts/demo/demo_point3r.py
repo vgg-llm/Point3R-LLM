@@ -428,7 +428,8 @@ def preprocess_images(
 
 def run_models(model,
         processor,
-        pointer_data_path = "./data/demo_data/pointer_data.pt"
+        pointer_data_path = "./data/demo_data/pointer_data.pt",
+        query = "Describe this scene."
     ):
 
     # Load pointer data from file (uncomment to load instead of computing)
@@ -447,7 +448,7 @@ def run_models(model,
             "role": "user",
             "content": [
                 {"type": "text", "text": f"<|vision_start|>{processor.pointer_token}<|vision_end|>"},
-                {"type": "text", "text": "Describe this scene."},
+                {"type": "text", "text": query},
             ],
         }
     ]
@@ -497,8 +498,8 @@ def run_models(model,
     print("="*70)
 
 if __name__=='__main__':
-    input_images_dir = "./data/demo_data/demo_photos/"
-    pointer_data_path = "./data/demo_data/pointer_data.pt"
+    input_images_dir = "./data/demo_data/demo_photos_2"
+    pointer_data_path = "./data/demo_data/demo_photos_2/pointer.pt"
     model, processor, min_pixels, max_pixels, point3r_model= load_models()
     preprocess_images(model, processor, min_pixels, max_pixels, point3r_model, input_images_dir, pointer_data_path)
     run_models(model, processor, pointer_data_path)

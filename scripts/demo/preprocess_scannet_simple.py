@@ -19,7 +19,7 @@ def setup_scannet_paths():
     posed_images_dir = base_dir / 'posed_images'
     input_image_paths = sorted([str(subfolder) for subfolder in posed_images_dir.iterdir() if subfolder.is_dir()])
 
-    pointer_memory_dir = base_dir / 'pointer_memory'
+    pointer_memory_dir = base_dir / 'pointer_memory_with_pose'
     pointer_memory_dir.mkdir(parents=True, exist_ok=True)
 
     pointer_data_paths = [

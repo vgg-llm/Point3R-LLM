@@ -17,7 +17,7 @@ DATASETS="scan2cap_point3r"                        # [DataArguments] Dataset wit
 # Path Configuration
 # ======================
 MODEL_PATH="Qwen/Qwen2.5-VL-3B-Instruct"  # [ModelArguments] Pretrained model path
-EXP_NAME="${DATASETS}_point3r"
+EXP_NAME="${DATASETS}_with_pose"
 OUTPUT_DIR="./outputs/${EXP_NAME}" 
 CACHE_DIR="./cache"                        # [TrainingArguments] Cache directory for models
 mkdir -p $OUTPUT_DIR
