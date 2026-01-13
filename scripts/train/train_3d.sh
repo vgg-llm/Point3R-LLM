@@ -9,26 +9,31 @@ MASTER_PORT=$(shuf -i 20000-29999 -n 1)     # Random port to avoid conflicts
 NPROC_PER_NODE=$(nvidia-smi --list-gpus | wc -l)  # Automatically detects available GPUs
 
 # ======================
-# Path Configuration
-# ======================
-MODEL_PATH="Qwen/Qwen2.5-VL-7B-Instruct/"  # [ModelArguments] Pretrained model path
-GEOMETRY_ENCODER_TYPE="vggt"
-GEOMETRY_ENCODER_PATH="facebook/VGGT-1B"
-OUTPUT_DIR="PATH_TO_OUTPUT_DIR"                   # Directory for saving checkpoints
-CACHE_DIR="./cache"                        # [TrainingArguments] Cache directory for models
-mkdir -p $OUTPUT_DIR
-
-# ======================
 # Model Configuration
 # ======================
-DATASETS="scan2cap,scanrefer,scannet_det"                  # [DataArguments] Dataset with sampling rate
+DATASETS="scan2cap"                  # [DataArguments] Dataset with sampling rate
+
+# ======================
+# Path Configuration
+# ======================
+MODEL_PATH="Qwen/Qwen2.5-VL-3B-Instruct"  # [ModelArguments] Pretrained model path
+GEOMETRY_ENCODER_TYPE="vggt"
+GEOMETRY_ENCODER_PATH="facebook/VGGT-1B"
+EXP_NAME="${DATASETS}_Qwen"
+OUTPUT_DIR="./outputs/${EXP_NAME}"                   # Directory for saving checkpoints
+CACHE_DIR="./cache"                        # [TrainingArguments] Cache directory for models
+mkdir -p $OUTPUT_DIR
+cp "${BASH_SOURCE[0]}" "${OUTPUT_DIR}/train_script.sh"
 
 # ======================
 # Training Hyperparameters
 # ======================
 export NCCL_NVLS_ENABLE=0
+export WANDB_PROJECT="Point3R-LLM"
+RUN_NAME="run_$(date +%Y%m%d_%H%M%S)_${EXP_NAME}"
+export WANDB_RUN_NAME="$RUN_NAME"
 LR=1e-5
-total_batch_size=64
+total_batch_size=16
 GRADIENT_ACCUMULATION_STEPS=$(($total_batch_size / $NPROC_PER_NODE))
 
 torchrun --nproc_per_node=$NPROC_PER_NODE \
@@ -70,9 +75,11 @@ torchrun --nproc_per_node=$NPROC_PER_NODE \
             --dataloader_num_workers 4 \
             --group_by_modality_length true \
             --seed 0 \
-            --report_to "none" \
-            --use_geometry_encoder True \
+            --report_to "wandb" \
+            --use_geometry_encoder False \
             --geometry_encoder_type $GEOMETRY_ENCODER_TYPE \
             --geometry_encoder_path $GEOMETRY_ENCODER_PATH \
             --feature_fusion_method "add" \
-            > ${OUTPUT_DIR}/train.log 2>&1
+            --use_pointer_memory False \
+            --use_preprocessed_input False \
+            2>&1 | tee ${OUTPUT_DIR}/train.log 2>&1

@@ -7,87 +7,78 @@ into Point3R memory features that can be used with the Point3R-enhanced model.
 
 import torch
 import numpy as np
-from PIL import Image
-from PIL.ImageOps import exif_transpose
+from PIL import Image, ImageOps
 import torchvision.transforms as tvf
 import sys
 
-from .inference import inference
+from .inference import inference, get_pred_pts3d
 from .point3r import LocalMemory
-
-# Image normalization (same as Point3R)
-ImgNorm = tvf.Compose([tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-
-
-def _resize_pil_image(img, long_edge_size):
-    """Resize PIL image maintaining aspect ratio."""
-    S = max(img.size)
-    if S > long_edge_size:
-        interp = Image.LANCZOS
-    elif S <= long_edge_size:
-        interp = Image.BICUBIC
-    new_size = tuple(int(round(x * long_edge_size / S)) for x in img.size)
-    return img.resize(new_size, interp)
+from .utils.geometry import geotrf
+import viser
 
 
-def prepare_image_for_point3r(image, size=512, crop=True, square_ok=False):
+def prepare_images_for_point3r(image_inputs, target_size=(640, 480), crop_border=20):
     """
-    Prepare a single image for Point3R processing.
+    Prepare images for Point3R processing.
+
+    This function processes images similar to the ScanNetDataset pattern:
+    - Crops borders if specified
+    - Resizes to target dimensions
+    - Converts to normalized tensors
 
     Args:
-        image: PIL Image, numpy array, or file path
-        size: Target size for the longer edge (default: 512)
-        crop: Whether to crop or resize to target dimensions
-        square_ok: Whether square images are acceptable
+        image_inputs: List of images (PIL Images, numpy arrays, or file paths)
+        target_size: Tuple of (width, height) for resizing (default: (640, 480))
+        crop_border: Number of pixels to crop from each edge (default: 20)
 
     Returns:
-        dict: Dictionary containing processed image tensor and metadata
+        list: List of view dictionaries containing:
+            - 'img': Normalized image tensor (3, H, W)
+            - 'true_shape': Tensor of shape (2,) with [height, width]
+            - 'img_mask': Boolean tensor indicating valid image
     """
-    # Convert to PIL Image if needed
-    if isinstance(image, str):
-        image = exif_transpose(Image.open(image)).convert("RGB")
-    elif isinstance(image, np.ndarray):
-        image = Image.fromarray(image).convert("RGB")
-    elif not isinstance(image, Image.Image):
-        raise ValueError(f"Unsupported image type: {type(image)}")
+    views = []
 
-    # Get original size
-    W1, H1 = image.size
+    for img_input in image_inputs:
+        # Convert to PIL Image if needed
+        if isinstance(img_input, str):
+            image = Image.open(img_input).convert("RGB")
+        elif isinstance(img_input, np.ndarray):
+            image = Image.fromarray(img_input).convert("RGB")
+        elif isinstance(img_input, Image.Image):
+            image = img_input.convert("RGB")
+        else:
+            raise ValueError(f"Unsupported image type: {type(img_input)}")
 
-    # Resize
-    if size == 224:
-        # resize short side to 224 (then crop)
-        image = _resize_pil_image(image, round(size * max(W1 / H1, H1 / W1)))
-    else:
-        # resize long side to target size
-        image = _resize_pil_image(image, size)
+        # Crop borders if specified
+        if crop_border > 0:
+            image = ImageOps.crop(image, border=crop_border)
 
-    W, H = image.size
-    cx, cy = W // 2, H // 2
+        # Resize to target dimensions
+        image = image.resize(target_size, Image.LANCZOS)
 
-    # Crop or resize to final dimensions
-    if size == 224:
-        half = min(cx, cy)
-        if crop:
-            image = image.crop((cx - half, cy - half, cx + half, cy + half))
-        else:  # resize
-            image = image.resize((2 * half, 2 * half), Image.LANCZOS)
-    else:
-        halfw, halfh = ((2 * cx) // 16) * 8, ((2 * cy) // 16) * 8
-        if not square_ok and W == H:
-            halfh = 3 * halfw // 4
-        if crop:
-            image = image.crop((cx - halfw, cy - halfh, cx + halfw, cy + halfh))
-        else:  # resize
-            image = image.resize((2 * halfw, 2 * halfh), Image.LANCZOS)
+        # Convert to tensor [0, 1] range (matching reference implementation)
+        img_tensor = tvf.ToTensor()(image)  # Shape: (3, H, W), range [0, 1]
 
-    W2, H2 = image.size
+        # Add batch dimension to match Point3R's expectation
+        # Point3R expects: (batch_size, 3, H, W)
+        img_tensor = img_tensor.unsqueeze(0)  # Shape: (1, 3, H, W)
 
-    # Return processed image
-    return {
-        "img": ImgNorm(image)[None],  # Add batch dimension
-        "true_shape": np.int32([H2, W2]),  # Note: height, width order
-    }
+        # Create true_shape tensor [height, width] with batch dimension
+        true_shape = torch.tensor([[image.height, image.width]], dtype=torch.int32)  # Shape: (1, 2)
+
+        # Create img_mask with batch dimension
+        img_mask = torch.tensor([True], dtype=torch.bool)  # Shape: (1,)
+
+        # Create view dictionary
+        view = {
+            "img": img_tensor,
+            "true_shape": true_shape,
+            "img_mask": img_mask,
+        }
+        views.append(view)
+
+    return views
 
 
 def extract_pointer_memory(
@@ -100,6 +91,7 @@ def extract_pointer_memory(
     full_seq=False,
     size=512,
     verbose=True,
+    use_viser=False,
 ):
     """
     Extract pointer memory from image inputs using Point3R model.
@@ -156,41 +148,26 @@ def extract_pointer_memory(
     if not isinstance(image_inputs, list):
         image_inputs = [image_inputs]
 
-    # Prepare images for Point3R
-    views = []
-    for i, img_input in enumerate(image_inputs):
-        # Process each image
-        processed = prepare_image_for_point3r(
-            img_input,
-            size=size,
-            crop=not no_crop,
-        )
+    # Prepare images for Point3R using the simplified function
+    # Determine target size based on the size parameter
+    if size == 512:
+        target_size = (640, 480)  # Default for size=512
+    elif size == 224:
+        target_size = (224, 224)
+    else:
+        # For other sizes, maintain 4:3 aspect ratio
+        target_size = (size, int(size * 3 / 4))
 
-        # Create view dict matching Point3R's expected format
-        view = {
-            "img": processed["img"],
-            "ray_map": torch.full(
-                (
-                    processed["img"].shape[0],
-                    6,
-                    processed["img"].shape[-2],
-                    processed["img"].shape[-1],
-                ),
-                torch.nan,
-            ),
-            "true_shape": torch.from_numpy(processed["true_shape"]),
-            "idx": i,
-            "instance": str(i),
-            "camera_pose": torch.from_numpy(np.eye(4).astype(np.float32)).unsqueeze(0),
-            "img_mask": torch.tensor(True).unsqueeze(0),
-            "ray_mask": torch.tensor(False).unsqueeze(0),
-            "update": torch.tensor(True).unsqueeze(0),
-            "reset": torch.tensor(False).unsqueeze(0),
-        }
-        views.append(view)
+    crop_border = 0 if no_crop else 20
+    views = prepare_images_for_point3r(
+        image_inputs,
+        target_size=target_size,
+        crop_border=crop_border
+    )
 
-        if verbose:
-            print(f"Processed image {i+1}/{len(image_inputs)}: shape {processed['true_shape']}")
+    if verbose:
+        for i, view in enumerate(views):
+            print(f"Processed image {i+1}/{len(image_inputs)}: shape {view['true_shape']}")
 
     # Run Point3R inference
     if verbose:
@@ -205,6 +182,48 @@ def extract_pointer_memory(
         verbose=verbose
     )
 
+    if use_viser:
+        server = viser.ViserServer()
+        colors = []
+        pts_3ds = []
+        confs = []
+
+        for idx, (pred, view) in enumerate(zip(outputs['pred'], outputs['views'])):
+            pts_3d = get_pred_pts3d(None, pred, use_pose=True)
+            color = view['img'].permute(0, 2, 3, 1)
+            conf = pred['conf']
+
+            color = color.detach().cpu().numpy() * 255
+            color = color.astype(np.uint8)
+            pts_3d = pts_3d.detach().cpu().numpy().reshape(-1, 3)
+            color = color.reshape(-1, 3)
+            conf = conf.detach().cpu().numpy().reshape(-1)
+
+            colors.append(color)
+            pts_3ds.append(pts_3d)
+            confs.append(conf)
+
+        colors = np.concatenate(colors, axis=0)
+        pts_3ds = np.concatenate(pts_3ds, axis=0)
+        confs = np.concatenate(confs, axis=0)
+
+        quantile = np.quantile(confs, 0.10)
+        mask = confs > quantile
+        pts_3ds = pts_3ds[mask]
+        colors = colors[mask]
+
+        center = np.mean(pts_3ds, axis=0, keepdims=True)
+        pts_3ds = pts_3ds - center
+
+        server.scene.add_point_cloud(
+            name=f"cloud",
+            points=pts_3ds,
+            colors=colors,
+            point_size=0.001,
+            visible=False
+        )
+        input("Press Enter to move on...")
+        
     # Extract pointer_aligned_image_embeds from Point3R outputs
     # This is now returned by Point3R's forward pass
     if 'pointer_aligned_image_embeds' in outputs and outputs['pointer_aligned_image_embeds'] is not None:

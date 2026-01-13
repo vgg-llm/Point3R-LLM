@@ -161,9 +161,9 @@ def main():
         image_embeds=image_embeds,
         grid_thw=grid_thw,
         device=point3r_device,
-        no_crop=False,
+        no_crop=True,
         size=512,
-        verbose=False,
+        verbose=True,
     )
 
     # Free up GPU memory by unloading Point3R model
@@ -334,7 +334,8 @@ def preprocess_images(
     stage1_start = time()
 
     # Compute sorted list of JPG image paths
-    image_paths = sorted(Path(input_images_dir).glob("*.jpg"))
+    p = Path(input_images_dir)
+    image_paths = sorted(list(p.glob("*.jpg")) + list(p.glob("*.jpeg")))
     # Uniformly sample 32 paths
     sample_ct = 32
     if len(image_paths) > sample_ct:
@@ -410,7 +411,8 @@ def preprocess_images(
         device=point3r_device,
         no_crop=False,
         size=512,
-        verbose=False,
+        verbose=True,
+        use_viser=True
     )
 
     # Free up GPU memory by unloading Point3R model
@@ -498,8 +500,11 @@ def run_models(model,
     print("="*70)
 
 if __name__=='__main__':
-    input_images_dir = "./data/demo_data/demo_photos_2"
-    pointer_data_path = "./data/demo_data/demo_photos_2/pointer.pt"
+    # input_images_dir = "./data/demo_data/sample_data/"
+    # pointer_data_path = "./data/demo_data/sample_data/pointer_data.pt"
+    input_images_dir = "./data/demo_data/3d_video_object_detection/subset"
+    pointer_data_path = "./data/demo_data/3d_video_object_detection/pointer_data.pt"
+    query = "Describe this scene."
     model, processor, min_pixels, max_pixels, point3r_model= load_models()
     preprocess_images(model, processor, min_pixels, max_pixels, point3r_model, input_images_dir, pointer_data_path)
     run_models(model, processor, pointer_data_path)

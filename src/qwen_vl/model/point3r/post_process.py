@@ -6,7 +6,7 @@
 
 import numpy as np
 import torch
-from src.point3r.utils.geometry import xy_grid
+from .utils.geometry import xy_grid
 
 
 def estimate_focal_knowing_depth(
