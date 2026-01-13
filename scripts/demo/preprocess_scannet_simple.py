@@ -68,7 +68,7 @@ def main():
             continue
 
         preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                          input_images_dir, pointer_data_path)
+                          input_images_dir, pointer_data_path, use_viser=False, unload_point3r_model=False)
 
     print(f"\nGPU {gpu_id}: Completed processing {len(local_input_paths)} scenes!")
 

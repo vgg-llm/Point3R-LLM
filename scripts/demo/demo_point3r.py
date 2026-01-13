@@ -222,17 +222,17 @@ def main():
     pointer_positions = pointer_data['pointer_positions'].to(model.device)
 
     # Use properly computed embeddings from extract_pointer_memory
-    pointer_aligned_image_embeds = pointer_data['pointer_memory_embeds']
+    memory_aligned_image_embeds = pointer_data['pointer_memory_embeds']
 
     # Verify shapes match
-    assert pointer_aligned_image_embeds.shape[0] == pointer_positions.shape[0], \
-        f"Shape mismatch: embeds {pointer_aligned_image_embeds.shape} vs positions {pointer_positions.shape}"
+    assert memory_aligned_image_embeds.shape[0] == pointer_positions.shape[0], \
+        f"Shape mismatch: embeds {memory_aligned_image_embeds.shape} vs positions {pointer_positions.shape}"
 
     # Generate with pointer memory
     with torch.inference_mode():
         generated_ids_pointer = model.generate(
             **inputs_pointer,
-            pointer_memory_embeds=pointer_aligned_image_embeds,
+            pointer_memory_embeds=memory_aligned_image_embeds,
             pointer_positions=pointer_positions,
             max_new_tokens=128,
             do_sample=True,
@@ -322,7 +322,9 @@ def preprocess_images(
         max_pixels,
         point3r_model,
         input_images_dir = "./data/demo_data/demo_photos/", 
-        pointer_data_path = "./data/demo_data/pointer_data.pt"
+        pointer_data_path = "./data/demo_data/pointer_data.pt",
+        use_viser = False,
+        unload_point3r_model = True
     ):
 
     # Example 2: Using the model with pointer memory
@@ -412,12 +414,13 @@ def preprocess_images(
         no_crop=False,
         size=512,
         verbose=True,
-        use_viser=True
+        use_viser=use_viser
     )
 
-    # Free up GPU memory by unloading Point3R model
-    print("Unloading Point3R model to free GPU memory...")
-    del point3r_model
+    if unload_point3r_model:
+        # Free up GPU memory by unloading Point3R model
+        print("Unloading Point3R model to free GPU memory...")
+        del point3r_model
     torch.cuda.empty_cache()
 
     stage1_end = time()
@@ -505,6 +508,8 @@ if __name__=='__main__':
     input_images_dir = "./data/demo_data/3d_video_object_detection/subset"
     pointer_data_path = "./data/demo_data/3d_video_object_detection/pointer_data.pt"
     query = "Describe this scene."
+    use_viser = True
     model, processor, min_pixels, max_pixels, point3r_model= load_models()
-    preprocess_images(model, processor, min_pixels, max_pixels, point3r_model, input_images_dir, pointer_data_path)
+    preprocess_images(model, processor, min_pixels, max_pixels, point3r_model, 
+                      input_images_dir, pointer_data_path, use_viser)
     run_models(model, processor, pointer_data_path)

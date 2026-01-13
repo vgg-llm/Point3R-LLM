@@ -52,7 +52,7 @@ class ARCroco3DStereoOutput(ModelOutput):
     """
     ress: Optional[List[Any]] = None
     views: Optional[List[Any]] = None
-    pointer_aligned_image_embeds: Optional[torch.Tensor] = None
+    memory_aligned_image_embeds: Optional[torch.Tensor] = None
     pos_decode_memory: Optional[torch.Tensor] = None
 
 def strip_module(state_dict):
@@ -727,10 +727,32 @@ class Point3R(CroCoNet):
         feat_i,
         dec_i,
         shape_i,
-        image_embeds=None,
-        grid_thw=None,
-        pointer_aligned_image_embeds=None,
+        memory_aligned_image_embeds=None,  # Accumulated image embeddings aligned with memory tokens
+        image_embeds_i=None,  # New image embeddings for current view
         ):
+        """
+        Add memory tokens with spatial merging to avoid duplicate points.
+
+        When i==0: Initializes memory from first view
+        When i>0: Merges new points with existing memory based on spatial proximity:
+            - Points far from existing memory → added as new tokens
+            - Points close to existing memory → merged by averaging
+
+        Args:
+            i: View index
+            pts3d: 3D point cloud from current view [bs, img_h, img_w, 3]
+            memory_feat: Current memory features (tensor if i<2, list if i>=2)
+            memory_pos: 3D positions of memory tokens
+            memory_aligned_image_embeds: Accumulated Qwen image embeddings aligned with memory
+            image_embeds_i: New Qwen image embeddings for current view [bs, num_patches, embed_dim]
+
+        Returns:
+            memory_feat: Updated memory features
+            chosen_pts/memory_pos: Updated 3D positions
+            init_memory_feat: Snapshot of memory (unused, kept for compatibility)
+            img_pos: Downsampled 3D positions from current view
+            memory_aligned_image_embeds: Updated image embeddings aligned with memory
+        """
         bs, img_h, img_w, _ = pts3d.shape
         img_pos_len_h = img_h // 16
         img_pos_len_w = img_w // 16
@@ -744,42 +766,35 @@ class Point3R(CroCoNet):
         memory_add = self.decoder_embed_memory(feat_key+feat_pts)
         memory_add = memory_add.float()
 
-        # Compute image_add - NEW, preserves Qwen dimension (dynamically determined)
-        if image_embeds is not None and grid_thw is not None:
-            image_add = self._interpolate_image_embeds_to_point3r_grid(
-                image_embeds,
-                grid_thw,
-                target_shape=(img_pos_len_h, img_pos_len_w)
-            )  # Shape: (bs, num_patches, embed_dim) where embed_dim = image_embeds.shape[-1]
-        else:
-            image_add = None
-
         if i == 0:
             memory_feat = memory_add
             init_memory_feat = memory_feat.clone().detach()
             chosen_pts = img_pos
-            # NEW: Initialize pointer_aligned_image_embeds
-            if image_add is not None:
-                pointer_aligned_image_embeds = image_add
-            else:
-                pointer_aligned_image_embeds = None
+            # NEW: Initialize memory_aligned_image_embeds
+            memory_aligned_image_embeds = image_embeds_i
         else:
             len_unit = 20
             memory_feat_list = []
             memory_pos_list = []
-            # NEW: Track pointer_aligned_image_embeds in parallel
-            pointer_aligned_image_embeds_list = [] if image_add is not None and pointer_aligned_image_embeds is not None else None
+            # NEW: Track pointer_image_embeds in parallel
+            image_embeds_list = []
+
+            takes_image_embeds = image_embeds_i is not None and memory_aligned_image_embeds is not None
+
             for j in range(bs):
                 memory_pos_j = memory_pos[j]
                 memory_feat_j = memory_feat[j]
                 img_pos_j = img_pos[j]
                 new_feat_j = memory_add[j]
 
-                # NEW: Get corresponding image embeddings
-                if pointer_aligned_image_embeds_list is not None:
-                    image_embeds_j = pointer_aligned_image_embeds[j]
-                    new_image_j = image_add[j]
+                # Extract image embeddings for batch j
+                # image_embeds_j: existing accumulated embeddings for this batch
+                # new_image_embeds_j: new embeddings from current view for this batch
+                if takes_image_embeds:
+                    image_embeds_j = memory_aligned_image_embeds[j]
+                    new_image_embeds_j = image_embeds_i[j]
 
+                # Compute adaptive threshold based on point cloud extent
                 unit_j = (torch.cat((memory_pos_j, img_pos_j), dim=0).max(dim=0).values - torch.cat((memory_pos_j, img_pos_j), dim=0).min(dim=0).values) / len_unit
                 threshold_j = torch.norm(unit_j)
                 distances = torch.cdist(img_pos_j, memory_pos_j)
@@ -806,8 +821,8 @@ class Point3R(CroCoNet):
                     memory_feat_j[unique_indices] = feat_avg
 
                     # NEW: Apply same merge logic to image embeddings (at embed_dim, dynamically determined)
-                    if pointer_aligned_image_embeds_list is not None:
-                        image_feat_merge = new_image_j[mask_merge]
+                    if takes_image_embeds:
+                        image_feat_merge = new_image_embeds_j[mask_merge]
                         embed_dim_image = image_embeds_j.shape[-1]  # Dynamically get dimension from input
                         image_feat_sum = torch.zeros((num_merge, embed_dim_image), device=image_embeds_j.device,
                                                      dtype=image_feat_merge.dtype)
@@ -823,24 +838,21 @@ class Point3R(CroCoNet):
                     memory_feat_j = torch.cat([memory_feat_j, feat_add], dim=0)
 
                     # NEW: Add new image embeddings at new locations
-                    if pointer_aligned_image_embeds_list is not None:
-                        image_feat_add = new_image_j[mask_add]
+                    if takes_image_embeds:
+                        image_feat_add = new_image_embeds_j[mask_add]
                         image_embeds_j = torch.cat([image_embeds_j, image_feat_add], dim=0)
 
                 memory_feat_list.append(memory_feat_j)
                 memory_pos_list.append(memory_pos_j)
                 # NEW: Track image embeddings
-                if pointer_aligned_image_embeds_list is not None:
-                    pointer_aligned_image_embeds_list.append(image_embeds_j)
+                if takes_image_embeds:
+                    image_embeds_list.append(image_embeds_j)
             init_memory_feat_list = [memory_feat_index.clone().detach() for memory_feat_index in memory_feat_list]
-            # NEW: Update pointer_aligned_image_embeds to the list version
-            if pointer_aligned_image_embeds_list is not None:
-                pointer_aligned_image_embeds = pointer_aligned_image_embeds_list
 
         if i == 0:
-            return memory_feat, chosen_pts, init_memory_feat, img_pos, pointer_aligned_image_embeds
+            return memory_feat, chosen_pts, init_memory_feat, img_pos, memory_aligned_image_embeds
         else:
-            return memory_feat_list, memory_pos_list, init_memory_feat_list, img_pos, pointer_aligned_image_embeds
+            return memory_feat_list, memory_pos_list, init_memory_feat_list, img_pos, image_embeds_list
 
     def _forward_merge(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None):
         shape, feat_ls, pos = self._encode_views(views)
@@ -852,11 +864,23 @@ class Point3R(CroCoNet):
         pos_decode_img = None
         pos_decode_memory = None
         merge_tag = False
-        # NEW: Initialize pointer_aligned_image_embeds
-        pointer_aligned_image_embeds = None
+        # NEW: Initialize memory_aligned_image_embeds
+        memory_aligned_image_embeds = None
+        # NEW: interpolate QWEN image embedding for the Point3R
+        if image_embeds is not None and grid_thw_images is not None:
+            img_h, img_w = shape[0][0].tolist()  # Get height and width from first view's shape
+            img_pos_len_h = img_h // 16
+            img_pos_len_w = img_w // 16
+            image_embeds = self._interpolate_image_embeds_to_point3r_grid(
+                image_embeds,
+                grid_thw_images,
+                target_shape=(img_pos_len_h, img_pos_len_w)
+            )  # Shape: (bs, num_patches, embed_dim) where embed_dim = image_embeds.shape[-1]
+
         for i in range(len(views)):
             feat_i = feat[i]
             pos_i = pos[i]
+            img_emb_i = image_embeds[i].unsqueeze(0)
             if i >= 2:
                 merge_tag = True
             if merge_tag:
@@ -950,7 +974,7 @@ class Point3R(CroCoNet):
                         pos_decode_memory = pos_decode_memory.clone().detach()
                     else:
                         pos_decode_memory = [pos_decode_memory_in.clone().detach() for pos_decode_memory_in in pos_decode_memory]
-                memory_feat, pos_decode_memory, init_memory_feat, pos_decode_img, pointer_aligned_image_embeds = self._forward_addmemory_merge(
+                memory_feat, pos_decode_memory, init_memory_feat, pos_decode_img, memory_aligned_image_embeds = self._forward_addmemory_merge(
                     i,
                     pts3d=this_pts3d,
                     init_memory_feat=init_memory_feat,
@@ -959,12 +983,11 @@ class Point3R(CroCoNet):
                     feat_i=feat_i.clone().detach(),
                     dec_i=dec[-1][:, 1:].clone().detach(),
                     shape_i=views[i]['true_shape'],
-                    image_embeds=image_embeds,
-                    grid_thw=grid_thw_images,
-                    pointer_aligned_image_embeds=pointer_aligned_image_embeds,
+                    memory_aligned_image_embeds=memory_aligned_image_embeds,
+                    image_embeds_i=img_emb_i,
                 )
 
-        return ress, views, pointer_aligned_image_embeds, pos_decode_memory
+        return ress, views, memory_aligned_image_embeds, pos_decode_memory
 
     def _forward(self, views, point3r_tag=False):
         shape, feat_ls, pos = self._encode_views(views)
@@ -1045,7 +1068,7 @@ class Point3R(CroCoNet):
         return ress, views
 
     def forward(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None):
-        ress, views, pointer_aligned_image_embeds, pos_decode_memory = self._forward_merge(
+        ress, views, memory_aligned_image_embeds, pos_decode_memory = self._forward_merge(
             views,
             point3r_tag=point3r_tag,
             image_embeds=image_embeds,
@@ -1054,7 +1077,7 @@ class Point3R(CroCoNet):
         return ARCroco3DStereoOutput(
             ress=ress,
             views=views,
-            pointer_aligned_image_embeds=pointer_aligned_image_embeds,
+            memory_aligned_image_embeds=memory_aligned_image_embeds,
             pos_decode_memory=pos_decode_memory
         )
         # stage1

@@ -59,9 +59,9 @@ def loss_of_one_batch(
                 output = model(batch)
             preds, batch = output.ress, output.views
             result = dict(views=batch, pred=preds)
-            # NEW: Include pointer_aligned_image_embeds in result
-            if hasattr(output, 'pointer_aligned_image_embeds'):
-                result['pointer_aligned_image_embeds'] = output.pointer_aligned_image_embeds
+            # NEW: Include memory_aligned_image_embeds in result
+            if hasattr(output, 'memory_aligned_image_embeds'):
+                result['memory_aligned_image_embeds'] = output.memory_aligned_image_embeds
             # NEW: Include pos_decode_memory in result
             if hasattr(output, 'pos_decode_memory'):
                 result['pos_decode_memory'] = output.pos_decode_memory

@@ -224,30 +224,30 @@ def extract_pointer_memory(
         )
         input("Press Enter to move on...")
         
-    # Extract pointer_aligned_image_embeds from Point3R outputs
+    # Extract memory_aligned_image_embeds from Point3R outputs
     # This is now returned by Point3R's forward pass
-    if 'pointer_aligned_image_embeds' in outputs and outputs['pointer_aligned_image_embeds'] is not None:
-        pointer_aligned_image_embeds = outputs['pointer_aligned_image_embeds']
+    if 'memory_aligned_image_embeds' in outputs and outputs['memory_aligned_image_embeds'] is not None:
+        memory_aligned_image_embeds = outputs['memory_aligned_image_embeds']
 
         # Handle list format (from merge mode with variable lengths)
-        if isinstance(pointer_aligned_image_embeds, list):
+        if isinstance(memory_aligned_image_embeds, list):
             # For demo, we typically use the last frame's embeddings
             # Or concatenate all frames
-            print(f'{len(pointer_aligned_image_embeds)} samples')
-            pointer_aligned_image_embeds = pointer_aligned_image_embeds[-1]  # Take last sample's
-            # Alternative: pointer_aligned_image_embeds = torch.cat(pointer_aligned_image_embeds, dim=1)
+            print(f'{len(memory_aligned_image_embeds)} samples')
+            memory_aligned_image_embeds = memory_aligned_image_embeds[-1]  # Take last sample's
+            # Alternative: memory_aligned_image_embeds = torch.cat(memory_aligned_image_embeds, dim=1)
 
         # Ensure shape is (num_patches, 2048)
-        if pointer_aligned_image_embeds.dim() == 3:
-            print(f'shape: {pointer_aligned_image_embeds.shape}')
+        if memory_aligned_image_embeds.dim() == 3:
+            print(f'shape: {memory_aligned_image_embeds.shape}')
             # Shape: (bs, num_patches, 2048) → (num_patches, 2048)
-            pointer_aligned_image_embeds = pointer_aligned_image_embeds[0]
+            memory_aligned_image_embeds = memory_aligned_image_embeds[0]
 
         # Already at 2048-dim (Qwen's native dimension) - no projection needed
-        pointer_memory_embeds = pointer_aligned_image_embeds  # (num_patches, 2048)
+        pointer_memory_embeds = memory_aligned_image_embeds  # (num_patches, 2048)
 
         if verbose:
-            print(f"Extracted pointer_aligned_image_embeds from Point3R: {pointer_aligned_image_embeds.shape}")
+            print(f"Extracted memory_aligned_image_embeds from Point3R: {memory_aligned_image_embeds.shape}")
     else:
         raise ValueError
 
