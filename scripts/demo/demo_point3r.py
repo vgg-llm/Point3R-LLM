@@ -9,6 +9,7 @@ This demonstrates:
 
 import torch
 import sys
+import os
 from pathlib import Path
 sys.path.insert(0, 'src')
 
@@ -254,8 +255,21 @@ def main():
     print(f"Total runtime: {stage2_end - stage0_start:.2f} seconds")
     print("="*70)
 
-def load_models(load_point3r=True, device=None):
+def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-Instruct"):
+    """
+    Load models for inference.
 
+    Args:
+        load_point3r: Whether to load Point3R model for memory extraction
+        device: Device to load models on (default: auto)
+        model_path: Path to model checkpoint or HuggingFace model ID
+                   Examples:
+                   - "Qwen/Qwen2.5-VL-3B-Instruct" (base model)
+                   - "outputs/scan2cap_point3r_all_frames" (fine-tuned)
+
+    Returns:
+        model, processor, min_pixels, max_pixels, point3r_model (or None)
+    """
     # stage 0, Model loading runtime measurement
     print("\n" + "="*70)
     print(f"Stage 0 (Model Loading)")
@@ -263,9 +277,9 @@ def load_models(load_point3r=True, device=None):
     stage0_start = time()
 
     # Load model with memory-efficient settings
-    print("Loading model...")
+    print(f"Loading model from: {model_path}")
     model = Qwen2_5_VLForConditionalGenerationWithPoint3R.from_pretrained(
-        "Qwen/Qwen2.5-VL-3B-Instruct",
+        model_path,
         cache_dir="./cache",
         torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
         device_map="auto" if device is None else device,  # Automatically distribute model across available devices
@@ -277,7 +291,7 @@ def load_models(load_point3r=True, device=None):
     min_pixels = 256 * 28 * 28
     max_pixels = 1280 * 28 * 28
     base_processor = AutoProcessor.from_pretrained(
-        "Qwen/Qwen2.5-VL-3B-Instruct", use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
+        model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
     )
 
     # Create Point3R processor with pointer token support
@@ -321,10 +335,10 @@ def preprocess_images(
         min_pixels,
         max_pixels,
         point3r_model,
-        input_images_dir = "./data/demo_data/demo_photos/", 
-        pointer_data_path = "./data/demo_data/pointer_data.pt",
+        input_images_dir = "./data/demo_data/demo_photos/",
+        pointer_data_path = None,
         use_viser = False,
-        unload_point3r_model = True
+        unload_point3r_model = False
     ):
 
     # Example 2: Using the model with pointer memory
@@ -426,21 +440,33 @@ def preprocess_images(
     stage1_end = time()
     print(f"Stage 1 (Image Feature Pre-processing) runtime: {stage1_end - stage1_start:.2f} seconds")
 
-    # Save pointer data to file
-    print(f"\nSaving pointer data to {pointer_data_path}...")
-    torch.save(pointer_data, pointer_data_path)
-    print("Pointer data saved successfully!")
+    # Save pointer data to file if path is provided
+    if pointer_data_path is not None:
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(pointer_data_path), exist_ok=True)
+        print(f"\nSaving pointer data to {pointer_data_path}...")
+        torch.save(pointer_data, pointer_data_path)
+        print("Pointer data saved successfully!")
+    else:
+        print("\nSkipping save (pointer_data_path is None)")
+
+    # Return pointer_data for in-memory use
+    return pointer_data
 
 def run_models(model,
         processor,
         pointer_data_path = "./data/demo_data/pointer_data.pt",
-        query = "Describe this scene."
+        query = "Describe this scene.",
+        pointer_data = None
     ):
 
-    # Load pointer data from file (uncomment to load instead of computing)
-    print(f"\nLoading pointer data from {pointer_data_path}...")
-    pointer_data = torch.load(pointer_data_path, weights_only=True)
-    print("Pointer data loaded successfully!")
+    # Load pointer data from file if not provided
+    if pointer_data is None:
+        print(f"\nLoading pointer data from {pointer_data_path}...")
+        pointer_data = torch.load(pointer_data_path, weights_only=True)
+        print("Pointer data loaded successfully!")
+    else:
+        print(f"\nUsing pre-loaded pointer data")
 
     # stage 2, LLM runtime measurement
     print("\n" + "="*70)
@@ -498,18 +524,279 @@ def run_models(model,
     stage2_end = time()
     print(f"Stage 2 (LLM Runtime) runtime: {stage2_end - stage2_start:.2f} seconds")
 
+    # print("\n" + "="*70)
+    # print("Demo completed!")
+    # print("="*70)
+
+    # Return the generated response
+    return output_text_pointer[0]
+
+def extract_scene_id_from_pointer_path(pointer_data_path: str) -> str:
+    """
+    Extract scene_id from pointer_data path.
+    Example: "scannet/pointer_memory/scene0000_00.pt" -> "scene0000_00"
+
+    Args:
+        pointer_data_path: Relative path to pointer data file
+
+    Returns:
+        Scene ID extracted from the filename
+    """
+    # Get filename without extension
+    filename = os.path.basename(pointer_data_path)
+    scene_id = os.path.splitext(filename)[0]
+    return scene_id
+
+def run_scan2cap(
+    scan2cap_annotation_path="data/train/scan2cap_debug_32frames_point3r.json",
+    data_dir="data/media",
+    output_path="data/demo_data/scan2cap_debug_results.json",
+    model_path="Qwen/Qwen2.5-VL-3B-Instruct",
+    auto_preprocess=False,
+    save_preprocessed=True,
+    use_viser=False
+):
+    """
+    Run scan2cap evaluation on a dataset with pre-computed pointer memory.
+
+    Args:
+        scan2cap_annotation_path: Path to the scan2cap annotation JSON file
+        data_dir: Base directory for resolving pointer_data paths
+        output_path: Path to save results JSON file
+        model_path: Path to model checkpoint or HuggingFace model ID
+                   Examples:
+                   - "Qwen/Qwen2.5-VL-3B-Instruct" (base model, default)
+                   - "outputs/scan2cap_point3r_all_frames" (fine-tuned)
+        auto_preprocess: If True, automatically generate pointer_data when file is missing
+                        by loading images from posed_images directory (default: False)
+        save_preprocessed: If True, save generated pointer_data to disk for future use
+                          Only used when auto_preprocess=True (default: True)
+        use_viser: Enable viser visualization during preprocessing (default: False)
+    """
+    import json
+    import os
+    from time import time
+
+    # Stage 0: Load annotations
     print("\n" + "="*70)
-    print("Demo completed!")
+    print("Scan2Cap Evaluation")
+    print("="*70)
+    print(f"Model: {model_path}")
+
+    start_time = time()
+
+    # Read scan2cap annotation file
+    print(f"\nLoading annotations from: {scan2cap_annotation_path}")
+    with open(scan2cap_annotation_path, 'r') as f:
+        annotations = json.load(f)
+
+    print(f"Total samples: {len(annotations)}")
+
+    # Count unique scenes
+    unique_scenes = set()
+    for sample in annotations:
+        if 'pointer_data' in sample:
+            scene_id = sample['pointer_data'].split('/')[2].replace('.pt', '')
+            unique_scenes.add(scene_id)
+    print(f"Unique scenes: {len(unique_scenes)}")
+
+    # Stage 1: Load models (without Point3R since using preprocessed data)
+    print("\n" + "="*70)
+    print("Loading Models")
+    print("="*70)
+    model_start = time()
+
+    model, processor, min_pixels, max_pixels, _ = load_models(
+        load_point3r=False,
+        model_path=model_path
+    )
+
+    model_end = time()
+    print(f"Model loading time: {model_end - model_start:.2f} seconds")
+
+    # Stage 2: Process each sample
+    print("\n" + "="*70)
+    print("Processing Samples")
+    print("="*70)
+
+    results = []
+    success_count = 0
+    fail_count = 0
+
+    # Cache to avoid reloading the same pointer data file multiple times
+    pointer_data_cache = {}
+
+    for idx, sample in enumerate(annotations):
+        try:
+            # Extract query from conversation
+            conversation_value = sample['conversations'][0]['value']
+            # Remove special tokens to get clean query
+            # Format: "<|vision_start|><|pointer_pad|><|vision_end|>\nActual question here"
+            query = conversation_value.split('<|vision_end|>')[-1].strip()
+
+            # Get pointer data path
+            pointer_data = sample['pointer_data']
+            pointer_data_path = os.path.join(data_dir, pointer_data)
+            print(f'pointer_data_path: {pointer_data_path}')
+
+            # Get ground truth
+            ground_truth = sample['conversations'][1]['value']
+
+            # Check if pointer data file exists (must be a file, not a directory)
+            if not os.path.exists(pointer_data_path):
+                if not auto_preprocess:
+                    print(f"\n{'='*70}")
+                    print(f"Sample {idx+1}/{len(annotations)} - ERROR")
+                    print(f"Pointer data file not found: {pointer_data_path}")
+                    print("Set auto_preprocess=True to generate it automatically")
+                    fail_count += 1
+                    continue
+
+                # Auto-preprocessing enabled - generate pointer data
+                print(f"\n{'='*70}")
+                print(f"Sample {idx+1}/{len(annotations)} - Preprocessing")
+                print(f"Pointer data file not found: {pointer_data_path}")
+                print("Auto-preprocessing enabled - generating pointer data...")
+
+                # Load Point3R model on-demand (only first time)
+                if 'point3r_model' not in locals():
+                    print("Loading Point3R model for preprocessing...")
+                    point3r_model = Point3R.from_pretrained("./cache/point3r_512.pth")
+                    point3r_model = point3r_model.to("cuda")
+                    point3r_model.eval()
+
+                # Extract scene_id from pointer_data path
+                scene_id = extract_scene_id_from_pointer_path(pointer_data)
+
+                # Construct input images directory
+                # pointer_data: "scannet/pointer_memory_debug/scene0000_00.pt"
+                # -> input_images_dir: "data_dir/scannet/posed_images/scene0000_00/"
+                posed_images_subdir = pointer_data.replace("pointer_memory_debug", "posed_images").replace(".pt", "")
+                input_images_dir = os.path.join(data_dir, posed_images_subdir)
+
+                # Check if images directory exists
+                if not os.path.exists(input_images_dir):
+                    print(f"Images directory not found: {input_images_dir}")
+                    fail_count += 1
+                    continue
+
+                # Generate pointer data
+                try:
+                    # Call preprocess_images with appropriate parameters
+                    preprocess_images(
+                        model=model,
+                        processor=processor,
+                        min_pixels=min_pixels,
+                        max_pixels=max_pixels,
+                        point3r_model=point3r_model,
+                        input_images_dir=input_images_dir,
+                        pointer_data_path=pointer_data_path,  # None if not saving
+                        use_viser=use_viser,
+                        unload_point3r_model=False  # Keep model loaded for subsequent preprocessing
+                    )
+
+                except Exception as e:
+                    print(f"Error during preprocessing: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    fail_count += 1
+                    continue
+
+            # Load pointer data with caching
+            if pointer_data_path not in pointer_data_cache:
+                pointer_data_cache[pointer_data_path] = torch.load(pointer_data_path, weights_only=False)
+                print(f"Loaded and cached pointer data from {pointer_data_path}")
+
+            # Run inference with cached pointer data
+            generated_response = run_models(
+                model=model,
+                processor=processor,
+                pointer_data_path=pointer_data_path,
+                query=query,
+                pointer_data=pointer_data_cache[pointer_data_path]
+            )
+
+            # Display results
+            print(f"\n{'='*70}")
+            print(f"Sample {idx+1}/{len(annotations)}")
+            print(f"Scene: {sample['metadata'].get('scene_id', 'N/A')}")
+            print(f"Object: {sample['metadata'].get('object_id', 'N/A')}")
+            print(f"Question Type: {sample['metadata'].get('question_type', 'N/A')}")
+            print(f"\nQuery: {query}")
+            print(f"\nGenerated: {generated_response}")
+            print(f"\nGround Truth: {ground_truth}")
+
+            # Store results
+            results.append({
+                'sample_id': idx,
+                'metadata': sample['metadata'],
+                'query': query,
+                'generated_response': generated_response,
+                'ground_truth': ground_truth,
+                'input_box': sample.get('input_box', None),
+                'gt_box': sample.get('gt_box', None),
+                'iou': sample.get('iou', None)
+            })
+            success_count += 1
+
+        except Exception as e:
+            print(f"\n{'='*70}")
+            print(f"Sample {idx+1}/{len(annotations)} - ERROR")
+            print(f"Error processing sample: {e}")
+            import traceback
+            traceback.print_exc()
+            fail_count += 1
+            continue
+
+    # Cleanup pointer data cache to free memory
+    print(f"\nCleaning up pointer data cache ({len(pointer_data_cache)} entries)...")
+    pointer_data_cache.clear()
+
+    # Cleanup Point3R model if it was loaded for preprocessing
+    if 'point3r_model' in locals():
+        print("Unloading Point3R model...")
+        del point3r_model
+        torch.cuda.empty_cache()
+
+    # Stage 3: Save results and print summary
+    print("\n" + "="*70)
+    print("Scan2Cap Evaluation Complete")
+    print("="*70)
+
+    end_time = time()
+
+    print(f"Total samples: {len(annotations)}")
+    print(f"Successful: {success_count}")
+    print(f"Failed: {fail_count}")
+    print(f"Total runtime: {end_time - start_time:.2f} seconds")
+
+    # Save results to JSON file
+    if output_path:
+        print(f"\nSaving results to: {output_path}")
+        with open(output_path, 'w') as f:
+            json.dump(results, f, indent=2)
+        print(f"Results saved successfully!")
+
     print("="*70)
 
 if __name__=='__main__':
-    # input_images_dir = "./data/demo_data/sample_data/"
-    # pointer_data_path = "./data/demo_data/sample_data/pointer_data.pt"
-    input_images_dir = "./data/demo_data/3d_video_object_detection/subset"
-    pointer_data_path = "./data/demo_data/3d_video_object_detection/pointer_data.pt"
-    query = "Describe this scene."
-    use_viser = True
-    model, processor, min_pixels, max_pixels, point3r_model= load_models()
-    preprocess_images(model, processor, min_pixels, max_pixels, point3r_model, 
-                      input_images_dir, pointer_data_path, use_viser)
-    run_models(model, processor, pointer_data_path)
+    # Example 1: Run scan2cap with base model
+    # run_scan2cap()
+
+    # Example 2: Run scan2cap with fine-tuned checkpoint
+    run_scan2cap(
+        output_path="data/demo_data/scan2cap_debug_results_pretrained.json",
+        auto_preprocess=True,
+        use_viser=True
+        # model_path="outputs/scan2cap_point3r_all_frames",
+    )
+
+    # Example 3: Preprocess images and run inference (original demo)
+    # input_images_dir = "./data/demo_data/3d_video_object_detection/subset"
+    # pointer_data_path = "./data/demo_data/3d_video_object_detection/pointer_data.pt"
+    # query = "Describe this scene."
+    # use_viser = True
+    # model, processor, min_pixels, max_pixels, point3r_model = load_models()
+    # preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
+    #                   input_images_dir, pointer_data_path, use_viser)
+    # run_models(model, processor, pointer_data_path, query)

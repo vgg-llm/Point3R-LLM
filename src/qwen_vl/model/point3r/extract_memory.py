@@ -15,6 +15,7 @@ from .inference import inference, get_pred_pts3d
 from .point3r import LocalMemory
 from .utils.geometry import geotrf
 import viser
+from typing import List
 
 
 def prepare_images_for_point3r(image_inputs, target_size=(640, 480), crop_border=20):
@@ -181,48 +182,6 @@ def extract_pointer_memory(
         grid_thw=grid_thw,
         verbose=verbose
     )
-
-    if use_viser:
-        server = viser.ViserServer()
-        colors = []
-        pts_3ds = []
-        confs = []
-
-        for idx, (pred, view) in enumerate(zip(outputs['pred'], outputs['views'])):
-            pts_3d = get_pred_pts3d(None, pred, use_pose=True)
-            color = view['img'].permute(0, 2, 3, 1)
-            conf = pred['conf']
-
-            color = color.detach().cpu().numpy() * 255
-            color = color.astype(np.uint8)
-            pts_3d = pts_3d.detach().cpu().numpy().reshape(-1, 3)
-            color = color.reshape(-1, 3)
-            conf = conf.detach().cpu().numpy().reshape(-1)
-
-            colors.append(color)
-            pts_3ds.append(pts_3d)
-            confs.append(conf)
-
-        colors = np.concatenate(colors, axis=0)
-        pts_3ds = np.concatenate(pts_3ds, axis=0)
-        confs = np.concatenate(confs, axis=0)
-
-        quantile = np.quantile(confs, 0.10)
-        mask = confs > quantile
-        pts_3ds = pts_3ds[mask]
-        colors = colors[mask]
-
-        center = np.mean(pts_3ds, axis=0, keepdims=True)
-        pts_3ds = pts_3ds - center
-
-        server.scene.add_point_cloud(
-            name=f"cloud",
-            points=pts_3ds,
-            colors=colors,
-            point_size=0.001,
-            visible=False
-        )
-        input("Press Enter to move on...")
         
     # Extract memory_aligned_image_embeds from Point3R outputs
     # This is now returned by Point3R's forward pass
@@ -269,31 +228,6 @@ def extract_pointer_memory(
             # pos_decode_memory shape: (num_memory_points, 3) where 3 is (x, y, z)
             # Quantize xyz values to integers from 0 to 32
             xyz_positions = pos_decode_memory.cpu()
-
-            # # Get min/max for each dimension
-            # x_min, x_max = xyz_positions[:, 0].min(), xyz_positions[:, 0].max()
-            # y_min, y_max = xyz_positions[:, 1].min(), xyz_positions[:, 1].max()
-            # z_min, z_max = xyz_positions[:, 2].min(), xyz_positions[:, 2].max()
-
-            # # Quantize each dimension to 0-32 range
-            # if x_max > x_min:
-            #     x_quantized = ((xyz_positions[:, 0] - x_min) / (x_max - x_min) * 32).long().clamp(0, 32)
-            # else:
-            #     x_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
-
-            # if y_max > y_min:
-            #     y_quantized = ((xyz_positions[:, 1] - y_min) / (y_max - y_min) * 32).long().clamp(0, 32)
-            # else:
-            #     y_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
-
-            # if z_max > z_min:
-            #     z_quantized = ((xyz_positions[:, 2] - z_min) / (z_max - z_min) * 32).long().clamp(0, 32)
-            # else:
-            #     z_quantized = torch.zeros(xyz_positions.shape[0], dtype=torch.long)
-
-            # # Overwrite pointer_positions with quantized xyz values
-            # pointer_positions = torch.stack([x_quantized, y_quantized, z_quantized], dim=1)
-
             pointer_positions = xyz_positions
 
             if verbose:
@@ -314,11 +248,9 @@ def extract_pointer_memory(
                     # Take first batch element if batched
                     pose = pose[0]  # Shape: (7,)
                 camera_poses.append(pose.cpu())
-
         if len(camera_poses) > 0:
             # Stack all camera poses: (num_frames, 7)
             camera_poses = torch.stack(camera_poses, dim=0)
-
             if verbose:
                 print(f"Extracted camera poses:")
                 print(f"  - Number of frames: {camera_poses.shape[0]}")
@@ -326,55 +258,84 @@ def extract_pointer_memory(
                 print(f"  - Translation ranges: x[{camera_poses[:, 0].min():.3f}, {camera_poses[:, 0].max():.3f}], "
                       f"y[{camera_poses[:, 1].min():.3f}, {camera_poses[:, 1].max():.3f}], "
                       f"z[{camera_poses[:, 2].min():.3f}, {camera_poses[:, 2].max():.3f}]")
-
-                # Print first camera pose
-                first_pose = camera_poses[0]
-                print(f"  - First camera pose:")
-                print(f"    Translation: [{first_pose[0]:.4f}, {first_pose[1]:.4f}, {first_pose[2]:.4f}]")
-                print(f"    Rotation (quat): [{first_pose[3]:.4f}, {first_pose[4]:.4f}, {first_pose[5]:.4f}, {first_pose[6]:.4f}]")
-
-                # Print last camera pose if there's more than one frame
-                if camera_poses.shape[0] > 1:
-                    last_pose = camera_poses[-1]
-                    print(f"  - Last camera pose:")
-                    print(f"    Translation: [{last_pose[0]:.4f}, {last_pose[1]:.4f}, {last_pose[2]:.4f}]")
-                    print(f"    Rotation (quat): [{last_pose[3]:.4f}, {last_pose[4]:.4f}, {last_pose[5]:.4f}, {last_pose[6]:.4f}]")
-
-            # Transform pointer_positions using the first frame's camera pose
-            if pointer_positions is not None:
-                from .utils.camera import pose_encoding_to_camera
-
-                # Convert first frame's camera pose (c2w) to camera matrix
-                first_pose = camera_poses[0:1]  # Shape: (1, 7)
-                c2w_matrix = pose_encoding_to_camera(first_pose, pose_encoding_type='absT_quaR')  # Shape: (1, 4, 4)
-                c2w_matrix = c2w_matrix[0]  # Shape: (4, 4)
-
-                # We want to transform world coordinates to first camera coordinates
-                # So we need the inverse: w2c = inv(c2w)
-                w2c_matrix = torch.inverse(c2w_matrix)  # Shape: (4, 4)
-
-                # pointer_positions is continuous xyz from pos_decode_memory
-                xyz_world = pointer_positions.float()  # Shape: (num_points, 3)
-
-                # Convert to homogeneous coordinates
-                ones = torch.ones(xyz_world.shape[0], 1)
-                xyz_world_homogeneous = torch.cat([xyz_world, ones], dim=1)  # Shape: (num_points, 4)
-
-                # Transform to first camera frame
-                xyz_cam_homogeneous = (w2c_matrix @ xyz_world_homogeneous.T).T  # Shape: (num_points, 4)
-                pointer_positions = xyz_cam_homogeneous[:, :3]  # Shape: (num_points, 3)
-
-                if verbose:
-                    print(f"Transformed pointer positions to first camera frame")
-                    print(f"  - Camera xyz ranges: x[{pointer_positions[:, 0].min():.3f}, {pointer_positions[:, 0].max():.3f}], "
-                          f"y[{pointer_positions[:, 1].min():.3f}, {pointer_positions[:, 1].max():.3f}], "
-                          f"z[{pointer_positions[:, 2].min():.3f}, {pointer_positions[:, 2].max():.3f}]")
         else:
             camera_poses = None
             if verbose:
                 print(f"No camera poses found (pose_head may be disabled)")
     else:
-        camera_poses = None
+        camera_poses = None  
+
+    if use_viser:
+        server = viser.ViserServer()
+        colors = []
+        pts_3ds = []
+        confs = []
+
+        for idx, (pred, view) in enumerate(zip(outputs['pred'], outputs['views'])):
+            pts_3d = get_pred_pts3d(None, pred, use_pose=True)
+            color = view['img'].permute(0, 2, 3, 1)
+            conf = pred['conf']
+
+            color = color.detach().cpu().numpy() * 255
+            color = color.astype(np.uint8)
+            pts_3d = pts_3d.detach().cpu().numpy().reshape(-1, 3)
+            color = color.reshape(-1, 3)
+            conf = conf.detach().cpu().numpy().reshape(-1)
+
+            colors.append(color)
+            pts_3ds.append(pts_3d)
+            confs.append(conf)
+
+        colors = np.concatenate(colors, axis=0)
+        pts_3ds = np.concatenate(pts_3ds, axis=0)
+        confs = np.concatenate(confs, axis=0)
+
+        quantile = np.quantile(confs, 0.10)
+        mask = confs > quantile
+        pts_3ds = pts_3ds[mask]
+        colors = colors[mask]
+
+        # center = np.mean(pts_3ds, axis=0, keepdims=True)
+        # pts_3ds = pts_3ds - center
+
+        server.scene.add_point_cloud(
+            name=f"cloud",
+            points=pts_3ds,
+            colors=colors,
+            point_size=0.001,
+            visible=True
+        )
+
+        server.scene.add_point_cloud(
+            name=f"pointer_memory_anchor",
+            points=pointer_positions.numpy(),
+            colors=(255, 0, 0),
+            point_size=0.02,
+            visible=True
+        )
+
+        frustums: List[viser.CameraFrustumHandle] = []
+        poses = camera_poses.numpy()
+        for i, pose in enumerate(poses):
+            h, w = 480, 640
+            fy = 1.1 * h
+            fov = 2 * np.arctan2(h / 2, fy)
+            frustum_cam = server.scene.add_camera_frustum(
+                f"camera_{i}", fov=fov, aspect=w / h, scale=0.05, image=None, line_width=1.0,
+                position=pose[:3], wxyz=pose[3:]
+            )
+            frustums.append(frustum_cam)
+        pose_positions = poses[:,:3]
+        if pose_positions.shape[0] > 1:
+            server.scene.add_spline_catmull_rom(
+                name=f"camera_trajectory",
+                curve_type="catmullrom",
+                points=pose_positions,
+                color=(0, 0, 200),
+                visible=True
+            )
+        
+        input("Press Enter to move on...")
 
     if verbose:
         print(f"Extracted pointer memory:")

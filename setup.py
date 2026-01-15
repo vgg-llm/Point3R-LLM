@@ -64,7 +64,6 @@ setup(
         "open3d===0.19.0",
         "spicy==0.16.0",
         "terminaltables",
-        "pytorch3d"
     ],
     author="Duo Zheng, Shijia Huang, Yanyang Li, Liwei Wang",
     author_email="dzheng23@link.cuhk.edu.hk",
