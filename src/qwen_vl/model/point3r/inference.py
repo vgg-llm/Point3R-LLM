@@ -65,6 +65,9 @@ def loss_of_one_batch(
             # NEW: Include pos_decode_memory in result
             if hasattr(output, 'pos_decode_memory'):
                 result['pos_decode_memory'] = output.pos_decode_memory
+            # NEW: Include memory_feat in result
+            if hasattr(output, 'memory_feat'):
+                result['memory_feat'] = output.memory_feat
             return result
         else:
             if point3r_tag:

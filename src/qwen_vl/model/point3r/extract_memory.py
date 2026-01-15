@@ -111,10 +111,13 @@ def extract_pointer_memory(
 
     Returns:
         dict: Dictionary containing:
-            - 'pointer_memory_embeds': Tensor of shape (num_pointers, hidden_dim)
-                                      Memory embeddings for each pointer token
+            - 'pointer_memory_embeds': Tensor of shape (num_pointers, 2048)
+                                      Qwen image embeddings aligned with memory (used for LLM input)
             - 'pointer_positions': Tensor of shape (num_pointers, 3)
-                                  3D positions (height, width, depth) for each pointer
+                                  3D positions (x, y, z) for each pointer in world coordinates
+            - 'memory_feat': (Optional) Tensor of shape (num_pointers, 768)
+                            Point3R's internal decoder features
+                            Only present if the model returns this field
             - 'camera_poses': (Optional) Tensor of shape (num_frames, 7)
                              Camera poses for each frame in format [tx, ty, tz, qw, qx, qy, qz]
                              Only present if the Point3R model has pose_head=True
@@ -184,58 +187,43 @@ def extract_pointer_memory(
     )
         
     # Extract memory_aligned_image_embeds from Point3R outputs
-    # This is now returned by Point3R's forward pass
     if 'memory_aligned_image_embeds' in outputs and outputs['memory_aligned_image_embeds'] is not None:
         memory_aligned_image_embeds = outputs['memory_aligned_image_embeds']
-
-        # Handle list format (from merge mode with variable lengths)
         if isinstance(memory_aligned_image_embeds, list):
-            # For demo, we typically use the last frame's embeddings
-            # Or concatenate all frames
-            print(f'{len(memory_aligned_image_embeds)} samples')
-            memory_aligned_image_embeds = memory_aligned_image_embeds[-1]  # Take last sample's
-            # Alternative: memory_aligned_image_embeds = torch.cat(memory_aligned_image_embeds, dim=1)
-
-        # Ensure shape is (num_patches, 2048)
+            memory_aligned_image_embeds = memory_aligned_image_embeds[-1]
         if memory_aligned_image_embeds.dim() == 3:
-            print(f'shape: {memory_aligned_image_embeds.shape}')
-            # Shape: (bs, num_patches, 2048) → (num_patches, 2048)
             memory_aligned_image_embeds = memory_aligned_image_embeds[0]
-
-        # Already at 2048-dim (Qwen's native dimension) - no projection needed
-        pointer_memory_embeds = memory_aligned_image_embeds  # (num_patches, 2048)
-
+        pointer_memory_embeds = memory_aligned_image_embeds
         if verbose:
-            print(f"Extracted memory_aligned_image_embeds from Point3R: {memory_aligned_image_embeds.shape}")
+            print(f"Extracted memory_aligned_image_embeds: {memory_aligned_image_embeds.shape}")
     else:
-        raise ValueError
+        raise ValueError("memory_aligned_image_embeds not found in outputs")
 
-    # Use pos_decode_memory from Point3R outputs if available (for merged memory)
+    # Extract memory_feat from Point3R outputs
+    memory_feat = None
+    if 'memory_feat' in outputs and outputs['memory_feat'] is not None:
+        memory_feat = outputs['memory_feat']
+        if isinstance(memory_feat, list):
+            memory_feat = memory_feat[-1]
+        if memory_feat.dim() == 3:
+            memory_feat = memory_feat[0]
+        if verbose:
+            print(f"Extracted memory_feat: {memory_feat.shape}")
+
+    # Extract pos_decode_memory from Point3R outputs
     if 'pos_decode_memory' in outputs and outputs['pos_decode_memory'] is not None:
         pos_decode_memory = outputs['pos_decode_memory']
-
-        # Handle list format (from merge mode with variable lengths)
         if isinstance(pos_decode_memory, list):
-            pos_decode_memory = pos_decode_memory[-1]  # Take last sample's
-            # Alternative: pos_decode_memory = torch.cat(pos_decode_memory, dim=1)
-
-        # Handle list format (from merge mode with variable lengths per batch)
+            pos_decode_memory = pos_decode_memory[-1]
         if pos_decode_memory.dim() == 3:
-            # Shape: (bs, num_patches, 3) → (num_patches, 3)
             pos_decode_memory = pos_decode_memory[0]
 
-        if pos_decode_memory is not None:
-            # pos_decode_memory shape: (num_memory_points, 3) where 3 is (x, y, z)
-            # Quantize xyz values to integers from 0 to 32
-            xyz_positions = pos_decode_memory.cpu()
-            pointer_positions = xyz_positions
-
-            if verbose:
-                print(f"Using pos_decode_memory from Point3R outputs")
-                print(f"  - Number of memory points: {xyz_positions.shape[0]}")
-                print(f"  - World xyz ranges: x[{xyz_positions[:, 0].min():.3f}, {xyz_positions[:, 0].max():.3f}], "
-                      f"y[{xyz_positions[:, 1].min():.3f}, {xyz_positions[:, 1].max():.3f}], "
-                      f"z[{xyz_positions[:, 2].min():.3f}, {xyz_positions[:, 2].max():.3f}]")
+        pointer_positions = pos_decode_memory.cpu()
+        if verbose:
+            print(f"Extracted pos_decode_memory: {pointer_positions.shape[0]} points")
+            print(f"  - xyz ranges: x[{pointer_positions[:, 0].min():.3f}, {pointer_positions[:, 0].max():.3f}], "
+                  f"y[{pointer_positions[:, 1].min():.3f}, {pointer_positions[:, 1].max():.3f}], "
+                  f"z[{pointer_positions[:, 2].min():.3f}, {pointer_positions[:, 2].max():.3f}]")
 
     # Extract camera poses from Point3R predictions (if pose_head=True)
     camera_poses = []
@@ -342,6 +330,8 @@ def extract_pointer_memory(
         print(f"  - Number of pointers: {pointer_memory_embeds.shape[0]}")
         print(f"  - Memory embeddings shape: {pointer_memory_embeds.shape}")
         print(f"  - Pointer positions shape: {pointer_positions.shape}")
+        if memory_feat is not None:
+            print(f"  - Memory feat shape: {memory_feat.shape}")
         if 'pos_decode_memory' in outputs and outputs['pos_decode_memory'] is not None:
             print(f"  - Final position ranges: x[{pointer_positions[:, 0].min():.3f}, {pointer_positions[:, 0].max():.3f}], "
                   f"y[{pointer_positions[:, 1].min():.3f}, {pointer_positions[:, 1].max():.3f}], "
@@ -351,6 +341,10 @@ def extract_pointer_memory(
         'pointer_memory_embeds': pointer_memory_embeds,
         'pointer_positions': pointer_positions,
     }
+
+    # Add memory_feat if available
+    if memory_feat is not None:
+        result['memory_feat'] = memory_feat
 
     # Add camera poses if available
     if camera_poses is not None:

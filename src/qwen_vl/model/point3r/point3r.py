@@ -54,6 +54,7 @@ class ARCroco3DStereoOutput(ModelOutput):
     views: Optional[List[Any]] = None
     memory_aligned_image_embeds: Optional[torch.Tensor] = None
     pos_decode_memory: Optional[torch.Tensor] = None
+    memory_feat: Optional[torch.Tensor] = None
 
 def strip_module(state_dict):
     """
@@ -987,7 +988,7 @@ class Point3R(CroCoNet):
                     image_embeds_i=img_emb_i,
                 )
 
-        return ress, views, memory_aligned_image_embeds, pos_decode_memory
+        return ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat
 
     def _forward(self, views, point3r_tag=False):
         shape, feat_ls, pos = self._encode_views(views)
@@ -1068,7 +1069,7 @@ class Point3R(CroCoNet):
         return ress, views
 
     def forward(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None):
-        ress, views, memory_aligned_image_embeds, pos_decode_memory = self._forward_merge(
+        ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat = self._forward_merge(
             views,
             point3r_tag=point3r_tag,
             image_embeds=image_embeds,
@@ -1078,7 +1079,8 @@ class Point3R(CroCoNet):
             ress=ress,
             views=views,
             memory_aligned_image_embeds=memory_aligned_image_embeds,
-            pos_decode_memory=pos_decode_memory
+            pos_decode_memory=pos_decode_memory,
+            memory_feat=memory_feat
         )
         # stage1
         # ress, views = self._forward(views, point3r_tag=point3r_tag)
