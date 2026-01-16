@@ -1129,16 +1129,13 @@ if __name__=='__main__':
     # )
 
     # Example 3: Preprocess images and run inference (original demo)
-    # input_images_dir = "./data/demo_data/3d_video_object_detection/subset"
-    # pointer_data_path = "./data/demo_data/3d_video_object_detection/pointer_data_qwen3.pt"
-    query = "Describe this scene."
-
     # input_images_dir = "./data/demo_data/sample_data"
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
     input_images_dir = "./data/media/scannet/posed_images/scene0284_00"
     pointer_data_path = "./data/demo_data/scene0284_00.pt"
     
     # query = "Describe this image."
+    query = "Describe this scene."
     model_path="Qwen/Qwen3-VL-4B-Instruct"
     use_viser = False
     model, processor, min_pixels, max_pixels, point3r_model = load_models(model_path=model_path)

@@ -17,7 +17,7 @@ DATASETS="scan2cap_point3r"                        # [DataArguments] Dataset wit
 # Path Configuration
 # ======================
 MODEL_PATH="Qwen/Qwen2.5-VL-3B-Instruct"  # [ModelArguments] Pretrained model path
-EXP_NAME="${DATASETS}_with_pose"
+EXP_NAME="${DATASETS}_with_projector"
 OUTPUT_DIR="./outputs/${EXP_NAME}" 
 CACHE_DIR="./cache"                        # [TrainingArguments] Cache directory for models
 mkdir -p $OUTPUT_DIR
@@ -30,7 +30,7 @@ cp "${BASH_SOURCE[0]}" "${OUTPUT_DIR}/train_script.sh"  # Save copy of training 
 export NCCL_NVLS_ENABLE=0
 export WANDB_PROJECT="Point3R-LLM"
 RUN_NAME="run_$(date +%Y%m%d_%H%M%S)_${EXP_NAME}"
-export WANDB_RUN_NAME="$RUN_NAME"
+RUN_NAME="${EXP_NAME}"
 LR=1e-5
 total_batch_size=16
 GRADIENT_ACCUMULATION_STEPS=$(($total_batch_size / $NPROC_PER_NODE))
@@ -42,7 +42,7 @@ torchrun --nproc_per_node=$NPROC_PER_NODE \
             --model_name_or_path $MODEL_PATH \
             --tune_mm_llm True \
             --tune_mm_vision False \
-            --tune_mm_mlp False \
+            --tune_mm_mlp True \
             --dataset_use $DATASETS \
             --output_dir $OUTPUT_DIR \
             --cache_dir $CACHE_DIR \
@@ -74,6 +74,7 @@ torchrun --nproc_per_node=$NPROC_PER_NODE \
             --dataloader_num_workers 4 \
             --group_by_modality_length true \
             --seed 0 \
+            --run_name "$RUN_NAME" \
             --report_to "wandb" \
             --use_geometry_encoder False \
             --use_pointer_memory True \

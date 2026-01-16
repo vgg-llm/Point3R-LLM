@@ -11,6 +11,7 @@ import argparse
 from pathlib import Path
 from demo_point3r import load_models, preprocess_images
 from tqdm import tqdm
+import os
 
 def setup_scannet_paths(save_name='pointer_memory'):
     base_dir = Path('./data/media/scannet')
@@ -54,8 +55,8 @@ def main():
     # local_input_paths = input_image_paths[gpu_id::total_gpus]
     # local_output_paths = pointer_data_paths[gpu_id::total_gpus]
 
-    print(f"GPU {gpu_id}/{total_gpus-1}: Processing {len(local_input_paths)} scenes (indices {start_idx} to {end_idx-1})")
-    # print(f"GPU {gpu_id}/{total_gpus-1}: Processing {len(local_input_paths)} scenes")
+
+    print(f"GPU {gpu_id}/{total_gpus-1}: Processing {len(local_input_paths)} scenes")
     print(f"Total scenes in dataset: {total_scenes}")
 
     # Load models - will use CUDA_VISIBLE_DEVICES=X so it sees only one GPU as cuda:0
@@ -70,7 +71,6 @@ def main():
         # Skip if already processed
         if Path(pointer_data_path).exists():
             continue
-
         try:
             preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
                               input_images_dir, pointer_data_path, use_viser=False, unload_point3r_model=False)

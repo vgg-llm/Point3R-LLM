@@ -5,8 +5,8 @@ from torch.nn import CrossEntropyLoss
 
 from .modeling_qwen2_5_vl import (
     Qwen2_5_VLPreTrainedModel, Qwen2_5_VLModel,Qwen2_5_VisionTransformerPretrainedModel,
-    Qwen2_5_VLCausalLMOutputWithPast, Qwen2_5_VLConfig, 
-    QWEN2_5_VL_INPUTS_DOCSTRING, _CONFIG_FOR_DOC
+    Qwen2_5_VLCausalLMOutputWithPast, Qwen2_5_VLConfig,
+    QWEN2_5_VL_INPUTS_DOCSTRING, _CONFIG_FOR_DOC, Qwen2_5_VLPatchMerger
 )
 from .point3r.point3r import LocalMemory, Point3R, Point3RConfig
 from transformers.generation import GenerationMixin
@@ -36,8 +36,27 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
         # Pointer token ID obtained from tokenizer (set after tokenizer.add_special_tokens)
         self.pointer_token_id = getattr(config, 'pointer_token_id', None)
 
+        # Pointer memory merger for refining pointer embeddings
+        self.pointer_memory_merger = Qwen2_5_VLPatchMerger(
+            dim=config.vision_config.out_hidden_size,  # Output dimension (same as input)
+            context_dim=config.vision_config.out_hidden_size,  # Input dimension
+            spatial_merge_size=1  # No spatial merging, just feature refinement
+        )
+
+        # Initialize memory feature fusion modules if enabled
+        if getattr(config, 'merge_memory_feat', False):
+            self._init_memory_fusion(config)
+
         # Initialize weights and apply final processing
         self.post_init()
+
+        # Initialize pointer modules to act as identity/residual to prevent numerical instability
+        # This is critical when loading pretrained checkpoints that don't contain these modules
+        self._init_pointer_modules_as_identity()
+
+        # Initialize memory fusion modules if enabled
+        if getattr(config, 'merge_memory_feat', False):
+            self._init_memory_fusion_as_residual()
 
     def _init_point3r_memory(self, config):
         inf = float('inf')
@@ -65,6 +84,153 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
         # TODO: proper device handling for point3r
         # point3r_model = point3r_model.to("cuda")
         self.point3r_model.eval()
+
+    def _init_memory_fusion(self, config):
+        """Initialize memory feature fusion modules for Point3R memory_feat integration.
+
+        This mirrors the pattern used in Qwen2_5_VLForConditionalGenerationWithVGGT's
+        _init_geometry_encoder method.
+        """
+        # Import required modules
+        from .feature_fusion import FeatureFusionModule, FeatureFusionConfig, GeometryFeatureMerger
+
+        # Memory feature dimensions
+        # memory_feat: (num_pointers, 768) from Point3R dec_embed_dim
+        # pointer_memory_embeds: (num_pointers, 3584) from vision_config.out_hidden_size
+        memory_dim = 768  # Point3R dec_embed_dim (hardcoded in Point3RConfig)
+        output_dim = config.vision_config.out_hidden_size  # 3584
+
+        # Create feature merger to match dimensions
+        # Note: spatial_merge_size=1 because memory_feat is already token-level (no spatial structure)
+        self.memory_feature_merger = GeometryFeatureMerger(
+            output_dim=output_dim,  # 3584
+            hidden_dim=getattr(config, "memory_merger_hidden_dim", 4096),
+            context_dim=memory_dim,  # 768
+            spatial_merge_size=1,  # No spatial merging - already token-level features
+            merger_type=getattr(config, "memory_merger_type", "mlp")
+        )
+
+        # Create feature fusion module to combine memory_feat with pointer_memory_embeds
+        fusion_config = FeatureFusionConfig(
+            fusion_method=getattr(config, "memory_fusion_method", "add"),
+            hidden_size=output_dim,  # 3584
+            num_heads=getattr(config, "memory_fusion_attention_heads", 8),
+            dropout=getattr(config, "memory_fusion_dropout", 0.1),
+            num_layers=getattr(config, "memory_fusion_num_layers", 1)
+        )
+        self.memory_feature_fusion = FeatureFusionModule(fusion_config)
+
+    def _process_memory_features(self, pointer_memory_embeds, memory_feat):
+        """Process Point3R memory features and fuse with pointer embeddings.
+
+        This mirrors the pattern used in Qwen2_5_VLForConditionalGenerationWithVGGT's
+        _process_geometry_features method.
+
+        Args:
+            pointer_memory_embeds: Tensor of shape (num_pointers, 3584)
+                Qwen-aligned image embeddings from Point3R
+            memory_feat: Tensor of shape (num_pointers, 768)
+                Point3R internal decoder features
+
+        Returns:
+            Tensor of shape (num_pointers, 3584)
+                Fused features combining pointer embeddings with memory features
+        """
+        if memory_feat is None:
+            return pointer_memory_embeds
+
+        # Ensure memory_feat has correct dtype
+        memory_feat = memory_feat.to(pointer_memory_embeds.dtype)
+
+        # Step 1: Reshape memory_feat to add spatial dimensions for GeometryFeatureMerger
+        # memory_feat shape: (num_pointers, 768)
+        # GeometryFeatureMerger expects: (n_image, h_patch, w_patch, dim)
+        # Since memory_feat is already token-level, we treat each token as a 1x1 spatial patch
+        num_pointers, memory_dim = memory_feat.shape
+        memory_feat_spatial = memory_feat.view(num_pointers, 1, 1, memory_dim)
+
+        # Step 2: Apply merger to match dimensions (768 → 3584)
+        # Output: (num_pointers, 1, 1, 3584)
+        merged_memory = self.memory_feature_merger(memory_feat_spatial)
+
+        # Step 3: Flatten back to token-level
+        # (num_pointers, 1, 1, 3584) → (num_pointers, 3584)
+        merged_memory = merged_memory.view(num_pointers, -1)
+
+        # Step 4: Fuse with pointer_memory_embeds
+        # Both tensors now have shape (num_pointers, 3584)
+        fused_embeds = self.memory_feature_fusion(pointer_memory_embeds, merged_memory)
+
+        return fused_embeds
+
+    def _init_pointer_modules_as_identity(self):
+        """Initialize pointer memory merger to act as near-identity initially.
+
+        This prevents numerical instability when using pretrained checkpoints
+        where the merger weights don't exist. The merger will act as a pass-through
+        initially and can learn refinements during fine-tuning.
+        """
+        import torch
+
+        with torch.no_grad():
+            # First linear layer: Initialize to small identity-like transformation
+            # Since input and output dims are same (3584), we can use identity
+            if self.pointer_memory_merger.mlp[0].weight.shape[0] == self.pointer_memory_merger.mlp[0].weight.shape[1]:
+                # Set to identity matrix scaled down slightly
+                self.pointer_memory_merger.mlp[0].weight.copy_(
+                    torch.eye(self.pointer_memory_merger.mlp[0].weight.shape[0]) * 0.1
+                )
+            else:
+                # If dimensions don't match, just scale down existing random weights
+                self.pointer_memory_merger.mlp[0].weight.data.mul_(0.01)
+
+            # Zero out bias
+            if self.pointer_memory_merger.mlp[0].bias is not None:
+                self.pointer_memory_merger.mlp[0].bias.zero_()
+
+            # Second linear layer: Initialize with very small weights (near zero)
+            # This makes the MLP output ≈ 0.1 * input initially (acts like scaled identity)
+            self.pointer_memory_merger.mlp[2].weight.data.mul_(0.001)
+            if self.pointer_memory_merger.mlp[2].bias is not None:
+                self.pointer_memory_merger.mlp[2].bias.zero_()
+
+            # RMSNorm is already initialized to ones (correct behavior)
+
+    def _init_memory_fusion_as_residual(self):
+        """Initialize memory fusion modules to preserve input features initially.
+
+        This ensures that memory_feat fusion doesn't corrupt pointer embeddings
+        when using pretrained checkpoints.
+        """
+        if not hasattr(self, 'memory_feature_merger') or not hasattr(self, 'memory_feature_fusion'):
+            return
+
+        import torch
+
+        with torch.no_grad():
+            # Initialize memory feature merger similarly
+            for module in self.memory_feature_merger.modules():
+                if isinstance(module, torch.nn.Linear):
+                    # Scale down linear layer weights significantly
+                    module.weight.data.mul_(0.001)
+                    if module.bias is not None:
+                        module.bias.data.zero_()
+
+            # Initialize fusion module based on fusion method
+            if hasattr(self.memory_feature_fusion, 'fusion_method'):
+                if self.memory_feature_fusion.fusion_method == "weighted":
+                    # Initialize weights to 0.5, 0.5 (balanced)
+                    if hasattr(self.memory_feature_fusion, 'weight_2d'):
+                        self.memory_feature_fusion.weight_2d.fill_(0.5)
+                    if hasattr(self.memory_feature_fusion, 'weight_3d'):
+                        self.memory_feature_fusion.weight_3d.fill_(0.5)
+                elif self.memory_feature_fusion.fusion_method in ["cross_attention", "self_attention"]:
+                    # Scale down attention layers
+                    for module in self.memory_feature_fusion.modules():
+                        if isinstance(module, torch.nn.Linear):
+                            module.weight.data.mul_(0.01)
+                            if module.bias is not None:
+                                module.bias.data.zero_()
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
@@ -429,6 +595,7 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
         pixel_values_videos: Optional[torch.FloatTensor] = None,
         pointer_memory_embeds: Optional[torch.Tensor] = None,
         pointer_positions: Optional[torch.Tensor] = None,
+        memory_feat: Optional[torch.FloatTensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
         video_grid_thw: Optional[torch.LongTensor] = None,
         rope_deltas: Optional[torch.LongTensor] = None,
@@ -524,6 +691,14 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
             
             if pointer_memory_embeds is not None:
                 pointer_memory_embeds = pointer_memory_embeds.type(self.visual.dtype)
+
+                # Apply pointer memory merger for feature refinement
+                pointer_memory_embeds = self.pointer_memory_merger(pointer_memory_embeds)
+
+                # Fuse with memory_feat if enabled
+                if getattr(self.config, 'merge_memory_feat', False) and memory_feat is not None:
+                    pointer_memory_embeds = self._process_memory_features(pointer_memory_embeds, memory_feat)
+
                 n_pointer_tokens = (input_ids == self.pointer_token_id).sum().item()
                 n_pointer_features = pointer_memory_embeds.shape[0]
                 if n_pointer_tokens != n_pointer_features:
@@ -739,7 +914,8 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
         if expand_size == 1:
             return input_ids, model_kwargs
 
-        visual_keys = ["pixel_values", "image_grid_thw", "pixel_values_videos", "video_grid_thw", "second_per_grid_ts", "pointer_memory_embeds"]
+        visual_keys = ["pixel_values", "image_grid_thw", "pixel_values_videos", "video_grid_thw", "second_per_grid_ts", "pointer_memory_embeds",
+                       "memory_feat"]
 
         def _expand_dict_for_generation_visual(dict_to_expand):
             image_grid_thw = model_kwargs.get("image_grid_thw", None)
@@ -796,6 +972,11 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
                         dict_to_expand[key], lengths=lengths, repeat_times=expand_size
                     )
                 elif key == "pointer_positions":
+                    lengths = list(pointer_nums)
+                    dict_to_expand[key] = _repeat_interleave_samples(
+                        dict_to_expand[key], lengths=lengths, repeat_times=expand_size
+                    )
+                elif key == "memory_feat":
                     lengths = list(pointer_nums)
                     dict_to_expand[key] = _repeat_interleave_samples(
                         dict_to_expand[key], lengths=lengths, repeat_times=expand_size

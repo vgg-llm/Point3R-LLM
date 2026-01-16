@@ -89,9 +89,31 @@ def set_model(model_args, model):
     if model_args.tune_mm_mlp:
         for n, p in visual_module.merger.named_parameters():
             p.requires_grad = True
+        # Add pointer memory merger trainability control
+        if hasattr(model, 'pointer_memory_merger'):
+            for n, p in model.pointer_memory_merger.named_parameters():
+                p.requires_grad = True
+        # Add memory fusion modules trainability control
+        if hasattr(model, 'memory_feature_merger'):
+            for n, p in model.memory_feature_merger.named_parameters():
+                p.requires_grad = True
+        if hasattr(model, 'memory_feature_fusion'):
+            for n, p in model.memory_feature_fusion.named_parameters():
+                p.requires_grad = True
     else:
         for n, p in visual_module.merger.named_parameters():
             p.requires_grad = False
+        # Add pointer memory merger trainability control
+        if hasattr(model, 'pointer_memory_merger'):
+            for n, p in model.pointer_memory_merger.named_parameters():
+                p.requires_grad = False
+        # Add memory fusion modules trainability control
+        if hasattr(model, 'memory_feature_merger'):
+            for n, p in model.memory_feature_merger.named_parameters():
+                p.requires_grad = False
+        if hasattr(model, 'memory_feature_fusion'):
+            for n, p in model.memory_feature_fusion.named_parameters():
+                p.requires_grad = False
 
     # Get LLM module - Qwen3-VL uses model.model.language_model, Qwen2.5-VL uses model.model
     if hasattr(model.model, 'language_model'):

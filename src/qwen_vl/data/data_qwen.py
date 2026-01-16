@@ -499,6 +499,8 @@ class LazySupervisedDataset(Dataset):
             pointer_positions = pointer_data['pointer_positions']
             # Load deepstack_image_embeds if available (needed for Qwen3-VL deepstack features)
             deepstack_pointer_embeds = pointer_data.get('deepstack_image_embeds', None)
+            memory_feat = pointer_data['memory_feat']
+            
             # Free memory immediately - don't keep memory_feat, camera_poses etc.
             del pointer_data
 
@@ -518,6 +520,7 @@ class LazySupervisedDataset(Dataset):
                 if deepstack_pointer_embeds is not None:
                     deepstack_pointer_embeds = [d[:max_pointer_tokens].clone() for d in deepstack_pointer_embeds]
 
+                memory_feat = memory_feat[:max_pointer_tokens].clone()
             # Process conversations with pointer token expansion
             sources_conv = copy.deepcopy([e["conversations"] for e in sources])
 
@@ -598,6 +601,7 @@ class LazySupervisedDataset(Dataset):
             pointer_memory_embeds_to_store = pointer_memory_embeds
             pointer_positions_to_store = pointer_positions
             deepstack_pointer_embeds_to_store = deepstack_pointer_embeds
+            memory_feat_to_store = memory_feat
         else:
             grid_thw_merged = None
             sources = copy.deepcopy([e["conversations"] for e in sources])
@@ -633,6 +637,7 @@ class LazySupervisedDataset(Dataset):
             data_dict["pointer_positions"] = pointer_positions_to_store
             if deepstack_pointer_embeds_to_store is not None:
                 data_dict["deepstack_pointer_embeds"] = deepstack_pointer_embeds_to_store
+            data_dict["memory_feat"] = memory_feat_to_store
 
         data_dict["tag"] = self.list_data_dict[i].get("tag", "2d")
         return data_dict
@@ -767,6 +772,11 @@ class DataCollatorForSupervisedDataset(object):
                 deepstack_pointer_embeds.append(torch.cat(layer_embeds, dim=0))
                 del layer_embeds  # Free intermediate list
             batch["deepstack_pointer_embeds"] = deepstack_pointer_embeds
+        
+        if "memory_feat" in instances[0]:
+            pointer_positions = [instance["memory_feat"] for instance in instances]
+            # Concatenate along the first dimension (number of pointer tokens)
+            batch["memory_feat"] = torch.cat(pointer_positions, dim=0)
 
         return batch
 

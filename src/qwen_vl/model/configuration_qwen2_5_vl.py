@@ -211,6 +211,14 @@ class Qwen2_5_VLConfig(PretrainedConfig):
         attention_dropout=0.0,
         vision_config=None,
         rope_scaling=None,
+        # Memory feature fusion parameters (Point3R)
+        merge_memory_feat=False,
+        memory_fusion_method="add",
+        memory_fusion_attention_heads=8,
+        memory_fusion_dropout=0.1,
+        memory_fusion_num_layers=1,
+        memory_merger_hidden_dim=4096,
+        memory_merger_type="mlp",
         **kwargs,
     ):
         if isinstance(vision_config, dict):
@@ -251,6 +259,15 @@ class Qwen2_5_VLConfig(PretrainedConfig):
                 self.rope_scaling["type"] = "default"
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
         rope_config_validation(self, ignore_keys={"mrope_section"})
+
+        # Memory fusion config (Point3R)
+        self.merge_memory_feat = merge_memory_feat
+        self.memory_fusion_method = memory_fusion_method
+        self.memory_fusion_attention_heads = memory_fusion_attention_heads
+        self.memory_fusion_dropout = memory_fusion_dropout
+        self.memory_fusion_num_layers = memory_fusion_num_layers
+        self.memory_merger_hidden_dim = memory_merger_hidden_dim
+        self.memory_merger_type = memory_merger_type
 
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
