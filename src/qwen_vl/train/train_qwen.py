@@ -167,7 +167,7 @@ def train(attn_implementation="flash_attention_2"):
             model.resize_token_embeddings(len(processor.tokenizer))
 
             data_args.image_processor = processor.image_processor
-            data_args.model_type = "qwen2.5vl"
+            data_args.model_type = "qwen2.5vl-spatial"
 
         elif model_args.use_geometry_encoder:
             from qwen_vl.model.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGenerationWithVGGT

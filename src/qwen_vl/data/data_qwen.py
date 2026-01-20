@@ -22,7 +22,7 @@ from decord import VideoReader
 import transformers
 
 from . import data_list
-from .rope2d import get_rope_index_25, get_rope_index_2
+from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2 
 from .utils import prepare_image_inputs
 
 IGNORE_INDEX = -100
@@ -147,7 +147,9 @@ class LazySupervisedDataset(Dataset):
             data_args, "video_min_total_pixels", 256 * 28 * 28
         )
         self.model_type = data_args.model_type
-        if data_args.model_type == "qwen2.5vl":
+        if data_args.model_type == "qwen2.5vl-spatial":
+            self.get_rope_index = get_rope_index_txyz
+        elif data_args.model_type == "qwen2.5vl":
             self.get_rope_index = get_rope_index_25
         else:
             self.get_rope_index = get_rope_index_2
@@ -564,6 +566,12 @@ class LazySupervisedDataset(Dataset):
                 labels=targets,
             )
 
+            position_ids, _ = self.get_rope_index(
+                self.data_args.image_processor.merge_size,
+                data_dict["input_ids"],
+                pointer_memory_embeds=pointer_memory_embeds,
+                pointer_positions=pointer_positions
+            )
             # For pointer data, position_ids are standard sequential positions
             position_ids = (
                 torch.arange(0, data_dict["input_ids"].size(1))
