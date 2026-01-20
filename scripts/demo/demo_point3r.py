@@ -336,9 +336,12 @@ def preprocess_images(
         max_pixels,
         point3r_model,
         input_images_dir = "./data/demo_data/demo_photos/",
+        input_poses_dir = None,
         pointer_data_path = None,
         use_viser = False,
-        unload_point3r_model = False
+        unload_point3r_model = False,
+        annotation_result = None,
+        scannet_pth_path = None,
     ):
 
     # Example 2: Using the model with pointer memory
@@ -357,6 +360,20 @@ def preprocess_images(
     if len(image_paths) > sample_ct:
         step = len(image_paths) / sample_ct
         image_paths = [image_paths[int(i * step)] for i in range(sample_ct)]
+
+    # Read pose files from input_poses_dir if provided
+    pose_paths = None
+    if input_poses_dir is not None:
+        poses_p = Path(input_poses_dir)
+        pose_paths = sorted(list(poses_p.glob("*.txt")))
+        if len(pose_paths) > 0:
+            print(f"Found {len(pose_paths)} pose files in {input_poses_dir}")
+        else:
+            print(f"Warning: No .txt pose files found in {input_poses_dir}")
+            pose_paths = None
+    if len(pose_paths) > sample_ct:
+        step = len(pose_paths) / sample_ct
+        pose_paths = [pose_paths[int(i * step)] for i in range(sample_ct)]
 
     vision_message = [
         {
@@ -428,7 +445,10 @@ def preprocess_images(
         no_crop=False,
         size=512,
         verbose=True,
-        use_viser=use_viser
+        use_viser=use_viser,
+        annotation_result=annotation_result,
+        scannet_pth_path=scannet_pth_path,
+        scannet_pose_paths=pose_paths
     )
 
     if unload_point3r_model:
@@ -547,8 +567,212 @@ def extract_scene_id_from_pointer_path(pointer_data_path: str) -> str:
     scene_id = os.path.splitext(filename)[0]
     return scene_id
 
+
+def extract_box_and_coordinates_from_scan2cap(
+    annotation_path: str,
+    reference_frame: str = "first",
+    verify_transform: bool = True
+) -> dict:
+    """
+    Extract gt_box and transformed box center coordinates from scan2cap annotation file.
+
+    Each element in the annotation file contains:
+    - conversations[0]['value']: Contains a coordinate [x, y, z] in the text
+    - gt_box: 6-element bounding box [x_min, y_min, z_min, x_max, y_max, z_max]
+    - input_box: The box used for transformation (gt_box for train, pred_box for val)
+    - cam2img, cam2global, axis_align_matrix: Transformation matrices
+
+    Elements sharing the same pointer_data share the same transformation matrices.
+
+    The transformation from input_box[:3] (global coordinates) to transformed_center
+    (camera coordinates) is computed as:
+        extrinsic = axis_align_matrix @ reference_frame_cam2global
+        global2cam = inv(extrinsic)
+        transformed_coord = global2cam @ [input_box[0], input_box[1], input_box[2], 1]
+
+    Args:
+        annotation_path: Path to the scan2cap annotation JSON file
+        reference_frame: Which frame to use as reference ("first" or "last")
+        verify_transform: If True, verify that computed transform matches stored value
+
+    Returns:
+        dict with structure:
+        {
+            'by_pointer_data': {
+                '<pointer_data_path>': {
+                    'cam2img': [[...]],
+                    'cam2global': [[[...]]],
+                    'axis_align_matrix': [[...]],
+                    'elements': [
+                        {
+                            'gt_box': [x_min, y_min, z_min, x_max, y_max, z_max],
+                            'input_box': [...],
+                            'box_center': [x, y, z],  # input_box[:3] used for transform
+                            'transformed_center': [x, y, z],  # from conversation text
+                            'computed_transformed_center': [x, y, z],  # recomputed
+                            'transform_matches': bool,
+                            'metadata': {...},
+                            'query': '...'
+                        },
+                        ...
+                    ]
+                },
+                ...
+            },
+            'all_elements': [...]  # flat list of all elements with their data
+        }
+    """
+    import json
+    import re
+    import numpy as np
+
+    with open(annotation_path, 'r') as f:
+        annotations = json.load(f)
+
+    result = {
+        'by_pointer_data': {},
+        'all_elements': []
+    }
+
+    # Regex pattern to extract [x, y, z] coordinates from conversation text
+    coord_pattern = r'\[(-?\d+\.?\d*),\s*(-?\d+\.?\d*),\s*(-?\d+\.?\d*)\]'
+
+    for idx, sample in enumerate(annotations):
+        pointer_data = sample.get('pointer_data', '')
+
+        # Initialize pointer_data entry if not exists
+        if pointer_data not in result['by_pointer_data']:
+            result['by_pointer_data'][pointer_data] = {
+                'cam2img': sample.get('cam2img', []),
+                'cam2global': sample.get('cam2global', []),
+                'axis_align_matrix': sample.get('axis_align_matrix', []),
+                'elements': []
+            }
+
+        # Extract gt_box and input_box
+        gt_box = sample.get('gt_box', [])
+        input_box = sample.get('input_box', [])
+
+        # box_center is input_box[:3] - this is what gets transformed
+        # (matches original code: input_box[:3] + [1])
+        box_center = None
+        if len(input_box) >= 3:
+            box_center = input_box[:3]
+
+        # Also compute gt_box center for reference
+        gt_box_center = None
+        if len(gt_box) >= 3:
+            gt_box_center = gt_box[:3]
+
+        # Extract transformed center coordinate from conversation text
+        transformed_center = None
+        conversation_value = sample.get('conversations', [{}])[0].get('value', '')
+        coord_match = re.search(coord_pattern, conversation_value)
+        if coord_match:
+            transformed_center = [
+                float(coord_match.group(1)),
+                float(coord_match.group(2)),
+                float(coord_match.group(3))
+            ]
+
+        # Compute the transformation to verify
+        computed_transformed_center = None
+        cam2global_list = sample.get('cam2global', [])
+        axis_align_matrix = sample.get('axis_align_matrix', [])
+
+        ref_cam2global = None
+        if box_center and cam2global_list and axis_align_matrix:
+            # Select reference frame (first or last)
+            ref_cam2global = cam2global_list[0] if reference_frame == "first" else cam2global_list[-1]
+
+            # Compute extrinsic: axis_align_matrix @ cam2global
+            axis_align_np = np.array(axis_align_matrix)
+            ref_cam2global_np = np.array(ref_cam2global)
+            extrinsic = axis_align_np @ ref_cam2global_np
+
+            # Compute global2cam (inverse of extrinsic)
+            global2cam = np.linalg.inv(extrinsic)
+
+            # Transform box center from global to camera coordinates
+            box_center_homogeneous = np.array(box_center + [1.0]).reshape(4, 1)
+            transformed = (global2cam @ box_center_homogeneous).reshape(4)[:3]
+            computed_transformed_center = [round(x, 2) for x in transformed.tolist()]
+
+        # Extract query (text after the coordinate)
+        query = ''
+        if '<|vision_end|>' in conversation_value:
+            query = conversation_value.split('<|vision_end|>')[-1].strip()
+
+        # Verify transformation matches if requested
+        transform_matches = None
+        if verify_transform and transformed_center and computed_transformed_center:
+            transform_matches = (transformed_center == computed_transformed_center)
+
+        element_data = {
+            'index': idx,
+            'gt_box': gt_box,
+            'gt_box_center': gt_box_center,
+            'input_box': input_box,
+            'box_center': box_center,  # input_box[:3] used for transformation
+            'transformed_center': transformed_center,  # from conversation text
+            'computed_transformed_center': computed_transformed_center,  # recomputed
+            'transform_matches': transform_matches,
+            'metadata': sample.get('metadata', {}),
+            'query': query,
+            'iou': sample.get('iou', None),
+            'pointer_data': pointer_data,
+            'global2cam': global2cam,
+            'ref_cam2global': ref_cam2global_np,
+            'axis_align': axis_align_np
+        }
+
+        result['by_pointer_data'][pointer_data]['elements'].append(element_data)
+        result['all_elements'].append(element_data)
+
+    return result
+
+def print_extracted_data_summary(extracted_data: dict):
+    """
+    Print a summary of extracted box and coordinate data.
+
+    Args:
+        extracted_data: Output from extract_box_and_coordinates_from_scan2cap
+    """
+    print("\n" + "="*70)
+    print("Extracted Box and Coordinate Data Summary")
+    print("="*70)
+
+    print(f"\nTotal elements: {len(extracted_data['all_elements'])}")
+    print(f"Unique scenes (pointer_data): {len(extracted_data['by_pointer_data'])}")
+
+    # Count transform verification results
+    all_matches = [e.get('transform_matches') for e in extracted_data['all_elements'] if e.get('transform_matches') is not None]
+    if all_matches:
+        match_count = sum(all_matches)
+        print(f"Transform verification: {match_count}/{len(all_matches)} matched")
+
+    for pointer_data, scene_data in extracted_data['by_pointer_data'].items():
+        print(f"\n{'-'*70}")
+        print(f"Scene: {pointer_data}")
+        print(f"Number of elements: {len(scene_data['elements'])}")
+        print(f"cam2img shape: {len(scene_data['cam2img'])}x{len(scene_data['cam2img'][0]) if scene_data['cam2img'] else 0}")
+        print(f"cam2global: {len(scene_data['cam2global'])} frames")
+        print(f"axis_align_matrix shape: {len(scene_data['axis_align_matrix'])}x{len(scene_data['axis_align_matrix'][0]) if scene_data['axis_align_matrix'] else 0}")
+
+        print("\nElements:")
+        for elem in scene_data['elements']:
+            match_str = ""
+            if elem.get('transform_matches') is not None:
+                match_str = " [MATCH]" if elem['transform_matches'] else " [MISMATCH]"
+
+            print(f"  [{elem['index']}] object_id: {elem['metadata'].get('object_id', 'N/A')}{match_str}")
+            print(f"       input_box[:3] (box_center): {elem['box_center']}")
+            print(f"       transformed_center (from text): {elem['transformed_center']}")
+            print(f"       computed_transformed_center:    {elem['computed_transformed_center']}")
+            print()
+
 def run_scan2cap(
-    scan2cap_annotation_path="data/train/scan2cap_debug_32frames_point3r.json",
+    scan2cap_annotation_path="data/demo_data/scan2cap_debug_32frames_point3r.json",
     data_dir="data/media",
     output_path="data/demo_data/scan2cap_debug_results.json",
     model_path="Qwen/Qwen2.5-VL-3B-Instruct",
@@ -674,6 +898,19 @@ def run_scan2cap(
                 posed_images_subdir = pointer_data.replace("pointer_memory_debug", "posed_images").replace(".pt", "")
                 input_images_dir = os.path.join(data_dir, posed_images_subdir)
 
+                # Construct ScanNet GT pth path for visualization
+                # pointer_data: "scannet/pointer_memory_debug/scene0000_00.pt"
+                # -> scannet_pth_path: "data_dir/scannet/pcd_with_object_aabbs/val/scene0000_00.pth"
+                for task in ['train', 'val', 'test']:
+                    scannet_pth_subdir = f"scannet/pcd_with_object_aabbs/val/{scene_id}.pth"
+                    scannet_pth_path = os.path.join(data_dir, scannet_pth_subdir)
+                    if os.path.isfile(scannet_pth_path):
+                        break
+                else:
+                    raise FileNotFoundError("Scannet GT File not found")
+                scannet_pose_subdir = f"scannet/posed_images/{scene_id}/"
+                scannet_pose_dir = os.path.join(data_dir, scannet_pose_subdir)
+
                 # Check if images directory exists
                 if not os.path.exists(input_images_dir):
                     print(f"Images directory not found: {input_images_dir}")
@@ -690,9 +927,12 @@ def run_scan2cap(
                         max_pixels=max_pixels,
                         point3r_model=point3r_model,
                         input_images_dir=input_images_dir,
+                        input_poses_dir=scannet_pose_dir,
                         pointer_data_path=pointer_data_path,  # None if not saving
                         use_viser=use_viser,
-                        unload_point3r_model=False  # Keep model loaded for subsequent preprocessing
+                        unload_point3r_model=False,  # Keep model loaded for subsequent preprocessing
+                        annotation_result=extract_box_and_coordinates_from_scan2cap(scan2cap_annotation_path),
+                        scannet_pth_path=scannet_pth_path if use_viser else None,
                     )
 
                 except Exception as e:
@@ -785,7 +1025,8 @@ if __name__=='__main__':
 
     # Example 2: Run scan2cap with fine-tuned checkpoint
     run_scan2cap(
-        output_path="data/demo_data/scan2cap_debug_results_pretrained.json",
+        scan2cap_annotation_path="data/demo_data/scan2cap_debug_32frames_point3r.json",
+        output_path="data/demo_data/scan2cap_val_output.json",
         auto_preprocess=True,
         use_viser=True
         # model_path="outputs/scan2cap_point3r_all_frames",

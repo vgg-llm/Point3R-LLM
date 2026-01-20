@@ -22,7 +22,7 @@ import numpy as np
 from tqdm import tqdm
 from scipy import sparse
 from collections import defaultdict
-from utils import uniform_sample_images
+from utils import uniform_sample_images_custom
 
 
 def convert_pc_to_box(obj_pc):
@@ -167,6 +167,10 @@ def main(args):
         all_data = []
         visible_instances = set()
         for i, item in enumerate(tqdm(data)):
+            # ### TODO: remove this line
+            # if i == 10:
+            #     break
+            # ##########################
             scene_id = item['scene_id']
 
             # skip duplicate
@@ -180,6 +184,7 @@ def main(args):
                 scan2box[scene_id] = load_scene(os.path.join(args.scannet_dir, "pcd_with_object_aabbs", split, f"{item['scene_id']}.pth"))
 
             gt_box = scan2box[scene_id][item['object_id']]
+            all_boxes = scan2box[scene_id]
 
             # load predicted boxes
             if split == "val":   
@@ -213,7 +218,7 @@ def main(args):
 
             input_box = gt_box if split == "train" else pred_box
             scan = id2scan[f"scannet/{item['scene_id']}"]
-            images = uniform_sample_images(scan['images'], args.nframes)
+            images = uniform_sample_images_custom(scan['images'], args.nframes)
             axis_align_matrix = np.array(scan['axis_align_matrix'])
             reference_frame = images[-1] if args.reference_frame == "last" else images[0]
             extrinsic = axis_align_matrix @ np.array(reference_frame["cam2global"])
@@ -239,7 +244,7 @@ def main(args):
                 "iou": max_iou if split == "val" else 1,
                 "metadata": {
                     "dataset": "scan2cap",
-                    "question_type": item["eval_type"], 
+                    # "question_type": item["eval_type"], 
                     "ann_id": item["ann_id"],
                     "object_id": item["object_id"],
                 }
@@ -263,11 +268,11 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scanrefer_dir", type=str, default="/mnt/data0/zhengduo/data/scanrefer/")
-    parser.add_argument("--scannet_dir", type=str, default="/mnt/data0/zhengduo/data/scannet")
-    parser.add_argument("--embodiedscan", type=str, default="/mnt/data0/zhengduo/data/embodiedscan-v2")
+    parser.add_argument("--scanrefer_dir", type=str, default="/home/gwakcy/datasets/scanrefer/")
+    parser.add_argument("--scannet_dir", type=str, default="./data/media/scannet")
+    parser.add_argument("--embodiedscan", type=str, default="/home/gwakcy/datasets/embodiedscan-v2")
     parser.add_argument("--reference_frame", type=str, default="first")
-    parser.add_argument("--output_dir", type=str, default="data/train")
+    parser.add_argument("--output_dir", type=str, default="data/demo_data")
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--nframes", type=int, default=32)
     args = parser.parse_args()

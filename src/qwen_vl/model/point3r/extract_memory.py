@@ -15,6 +15,7 @@ from .inference import inference, get_pred_pts3d
 from .point3r import LocalMemory
 from .utils.geometry import geotrf
 import viser
+import viser.transforms as tf
 from typing import List
 
 
@@ -93,6 +94,9 @@ def extract_pointer_memory(
     size=512,
     verbose=True,
     use_viser=False,
+    annotation_result=None,
+    scannet_pth_path=None,
+    scannet_pose_paths=None,
 ):
     """
     Extract pointer memory from image inputs using Point3R model.
@@ -108,6 +112,13 @@ def extract_pointer_memory(
         full_seq: If True, process full sequence mode (default: False)
         size: Target image size (default: 512)
         verbose: Print progress information (default: True)
+        annotation_result: Output from extract_box_and_coordinates_from_scan2cap containing
+                          gt_box, transformed_center, and transformation matrices for viser
+                          visualization (default: None)
+        scannet_pth_path: Path to ScanNet .pth file containing ground truth point cloud
+                         (xyz, rgb, aabb_corner_xyz, aabb_obj_ids) for visualization (default: None)
+        scannet_pose_paths: List of paths to ScanNet pose .txt files containing camera poses
+                           (default: None)
 
     Returns:
         dict: Dictionary containing:
@@ -255,6 +266,70 @@ def extract_pointer_memory(
 
     if use_viser:
         server = viser.ViserServer()
+
+        if annotation_result is not None:
+            # Get transformation matrices from the first element (already computed as numpy arrays)
+            first_elem = annotation_result['all_elements'][0]
+            global2cam = first_elem['global2cam']
+            ref_cam2global = first_elem['ref_cam2global']
+            axis_align_matrix = first_elem['axis_align']
+            # extrinsic = axis_align_matrix @ ref_cam2global
+            # global2cam_computed = np.linalg.inv(extrinsic)
+
+            # apply axis_align_matrix to the PCD -> axis aligned
+            # extrinsic: current camera position w.r.t. 
+            # Visualize ScanNet pose files if provided
+            if scannet_pose_paths is not None and len(scannet_pose_paths) > 0:
+                print(f"Loading {len(scannet_pose_paths)} ScanNet pose files...")
+                gt_frustums: List[viser.CameraFrustumHandle] = []
+                for i, pose_path in enumerate(scannet_pose_paths):
+                    try:
+                        # Load 4x4 pose matrix from txt file
+                        pose_matrix = np.loadtxt(pose_path)
+                        if pose_matrix.shape == (4, 4):
+                            aligned_pose_matrix = axis_align_matrix @ pose_matrix
+                            aligned_pose_se3 = tf.SE3.from_matrix(aligned_pose_matrix)
+                            h, w = 480, 640
+                            fy = 1.1 * h
+                            fov = 2 * np.arctan2(h / 2, fy)
+                            gt_frustum = server.scene.add_camera_frustum(
+                                f"gt_camera_{i}",
+                                fov=fov,
+                                aspect=w / h,
+                                scale=0.05,
+                                image=None,
+                                line_width=1.0,
+                                color=(255, 165, 0),  # Orange color for GT poses
+                                position=aligned_pose_se3.translation(),
+                                wxyz=aligned_pose_se3.rotation().wxyz
+                            )
+                            gt_frustums.append(gt_frustum)
+                        if i == 0:
+                            ref_cam2global = pose_matrix
+                            ref_cam2global_se3 = tf.SE3.from_matrix(ref_cam2global)
+                            print('Overwrite ref_cam2global')
+                            print(f"GT ref.frame camera pose: {pose_se3}")
+                            print(f"Given ref.frame camera pose: {ref_cam2global_se3}")
+
+
+                    except Exception as e:
+                        print(f"  Warning: Failed to load pose from {pose_path}: {e}")
+                print(f"  Added {len(gt_frustums)} GT camera frustums (orange)")
+
+            
+            extrinsic = axis_align_matrix @ ref_cam2global
+            extrinsic_se3 = tf.SE3.from_matrix(extrinsic)
+            # extrinsic_se3 = extrinsic_se3.inverse()
+            align_wxyz = extrinsic_se3.rotation().wxyz
+            align_pos = extrinsic_se3.translation()
+            print('Current extrinsic:', align_wxyz, align_pos, sep='\n')
+        else:
+            axis_align_matrix = np.eye(4)
+            extrinsic_se3 = tf.SE3.from_matrix(np.eye(4))
+            align_wxyz = extrinsic_se3.rotation().wxyz
+            align_pos = extrinsic_se3.translation()
+            print('No annotation given.')
+
         colors = []
         pts_3ds = []
         confs = []
@@ -291,38 +366,144 @@ def extract_pointer_memory(
             points=pts_3ds,
             colors=colors,
             point_size=0.001,
-            visible=True
+            visible=True,
+            wxyz=align_wxyz,
+            position=align_pos
         )
+
+        server.scene.add_point_cloud(
+            name=f"cloud (camera_aligned)",
+            points=pts_3ds,
+            colors=colors,
+            point_size=0.001,
+            visible=False,
+        )
+        
 
         server.scene.add_point_cloud(
             name=f"pointer_memory_anchor",
             points=pointer_positions.numpy(),
             colors=(255, 0, 0),
             point_size=0.02,
-            visible=True
+            visible=True,
+            wxyz=align_wxyz,
+            position=align_pos
+
         )
 
         frustums: List[viser.CameraFrustumHandle] = []
         poses = camera_poses.numpy()
         for i, pose in enumerate(poses):
+            pose_se3 = extrinsic_se3 @ tf.SE3(np.concatenate([pose[3:],pose[:3]]))
+            
             h, w = 480, 640
             fy = 1.1 * h
             fov = 2 * np.arctan2(h / 2, fy)
             frustum_cam = server.scene.add_camera_frustum(
                 f"camera_{i}", fov=fov, aspect=w / h, scale=0.05, image=None, line_width=1.0,
-                position=pose[:3], wxyz=pose[3:]
+                position=pose_se3.translation(), wxyz=pose_se3.rotation().wxyz, color=(100, 255, 100) # light green
             )
             frustums.append(frustum_cam)
-        pose_positions = poses[:,:3]
-        if pose_positions.shape[0] > 1:
-            server.scene.add_spline_catmull_rom(
-                name=f"camera_trajectory",
-                curve_type="catmullrom",
-                points=pose_positions,
-                color=(0, 0, 200),
-                visible=True
-            )
+        # pose_positions = poses[:,:3]
+        # if pose_positions.shape[0] > 1:
+        #     server.scene.add_spline_catmull_rom(
+        #         name=f"camera_trajectory",
+        #         curve_type="catmullrom",
+        #         points=pose_positions,
+        #         color=(0, 0, 200),
+        #         visible=True
+        #     )
         
+        # Visualize annotation data if provided
+        point_array = np.array([[0, 0, 0]])
+        if annotation_result is not None:
+            # Get all elements from annotation result
+            all_elements = annotation_result.get('all_elements', [])
+            framewise_elements = annotation_result.get('by_pointer_data')
+            for elem in all_elements:
+                obj_id = elem.get('metadata', {}).get('object_id', 'unknown')
+                box_center = elem.get('box_center')
+                transformed_box_center = elem.get('transformed_center')
+                # if box_center is not None:
+                #     # box_center is in camera coordinates [x, y, z]
+                #     pos = tuple(box_center)
+                #     server.scene.add_point_cloud(
+                #         name=f'obj_{obj_id}',
+                #         points=point_array,
+                #         point_size=0.05,
+                #         colors=(0, 255, 0),
+                #         position=pos
+                #     )
+                if transformed_box_center is not None:
+                    # box_center is in camera coordinates [x, y, z]
+                    pos = tuple(transformed_box_center)
+                    server.scene.add_point_cloud(
+                        name=f'obj_{obj_id} (camera_aligned)',
+                        points=point_array,
+                        point_size=0.05,
+                        colors=(0, 255, 0),
+                        position=pos,
+                        visible=False
+                    )
+
+        # Visualize ScanNet GT point cloud if path provided
+        if scannet_pth_path is not None:
+            import os
+            if os.path.exists(scannet_pth_path):
+                print(f"Loading ScanNet GT point cloud from {scannet_pth_path}...")
+                gt_data = torch.load(scannet_pth_path, weights_only=False)
+
+                gt_xyz = gt_data['xyz']
+                gt_rgb = gt_data['rgb']
+
+                server.scene.add_point_cloud(
+                    name="gt_point_cloud",
+                    points=gt_xyz,
+                    colors=gt_rgb,
+                    point_size=0.01,
+                    visible=True
+                )
+                print(f"  Added GT point cloud: {gt_xyz.shape[0]} points")
+
+                # Add AABBs if available
+                if 'aabb_corner_xyz' in gt_data and 'aabb_obj_ids' in gt_data:
+                    aabb_corners = gt_data['aabb_corner_xyz']
+                    aabb_obj_ids = gt_data['aabb_obj_ids']
+
+                    aabb_colors = [
+                        (255, 100, 100),  # Light red
+                        (100, 255, 100),  # Light green
+                        (100, 100, 255),  # Light blue
+                        (255, 255, 100),  # Yellow
+                        (255, 100, 255),  # Magenta
+                        (100, 255, 255),  # Cyan
+                    ]
+
+                    # AABB edges: 12 edges connecting 8 corners
+                    edges = [
+                        (0, 1), (1, 3), (3, 2), (2, 0),  # Bottom face
+                        (4, 5), (5, 7), (7, 6), (6, 4),  # Top face
+                        (0, 4), (1, 5), (2, 6), (3, 7)   # Vertical edges
+                    ]
+
+                    for i, (obj_id, corners) in enumerate(zip(aabb_obj_ids, aabb_corners)):
+                        color = aabb_colors[i % len(aabb_colors)]
+                        edge_points = []
+                        for e0, e1 in edges:
+                            edge_points.append(np.array([corners[e0], corners[e1]]))
+                        edge_points = np.stack(edge_points, axis=0)
+
+                        server.scene.add_line_segments(
+                            name=f"gt_aabb_{obj_id}",
+                            points=edge_points,
+                            colors=color,
+                            line_width=2.0,
+                            visible=True
+                        )
+                    print(f"  Added {len(aabb_obj_ids)} GT AABBs")
+            else:
+                print(f"Warning: ScanNet GT path not found: {scannet_pth_path}")
+
         input("Press Enter to move on...")
 
     if verbose:

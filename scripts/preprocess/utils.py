@@ -150,7 +150,15 @@ def uniform_sample_images(images, nframe):
     interval = len(images) // nframe
     return images[::interval][:nframe]
 
-
+def uniform_sample_images_custom(images, nframe):
+    """
+    Uniformly sample nframe images from the list of images.
+    """
+    nframe = 32
+    if len(images) > nframe:
+        step = len(images) / nframe
+        images = [images[int(i * step)] for i in range(nframe)]
+    return images
 
 def sample_images_and_best_view(scan, nframes, gt_instance_id):
     """
