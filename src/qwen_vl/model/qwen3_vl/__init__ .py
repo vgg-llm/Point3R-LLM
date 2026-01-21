@@ -20,6 +20,7 @@ from transformers.utils.import_utils import define_import_structure
 if TYPE_CHECKING:
     from .configuration_qwen3_vl import *
     from .modeling_qwen3_vl import *
+    from .modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
     from .processing_qwen3_vl import *
     from .video_processing_qwen3_vl import *
 else:

@@ -147,7 +147,9 @@ class LazySupervisedDataset(Dataset):
             data_args, "video_min_total_pixels", 256 * 28 * 28
         )
         self.model_type = data_args.model_type
-        if data_args.model_type == "qwen2.5vl-spatial":
+        if data_args.model_type == "qwen3vl-spatial":
+            self.get_rope_index = get_rope_index_txyz
+        elif data_args.model_type == "qwen2.5vl-spatial":
             self.get_rope_index = get_rope_index_txyz
         elif data_args.model_type == "qwen2.5vl":
             self.get_rope_index = get_rope_index_25

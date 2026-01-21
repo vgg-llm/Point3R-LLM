@@ -28,8 +28,6 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-import qwen_vl.train.trainer
-import qwen_vl.train.sampler
 from trainer import replace_qwen2_vl_attention_class
 
 from transformers import (
@@ -67,26 +65,37 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 
 
 def set_model(model_args, model):
+    # Get visual module (same for both Qwen2.5-VL and Qwen3-VL)
+    visual_module = model.visual if hasattr(model, 'visual') else model.model.visual
+
     if model_args.tune_mm_vision:
-        for n, p in model.visual.named_parameters():
+        for n, p in visual_module.named_parameters():
             p.requires_grad = True
     else:
-        for n, p in model.visual.named_parameters():
+        for n, p in visual_module.named_parameters():
             p.requires_grad = False
 
     if model_args.tune_mm_mlp:
-        for n, p in model.visual.merger.named_parameters():
+        for n, p in visual_module.merger.named_parameters():
             p.requires_grad = True
     else:
-        for n, p in model.visual.merger.named_parameters():
+        for n, p in visual_module.merger.named_parameters():
             p.requires_grad = False
 
+    # Get LLM module - Qwen3-VL uses model.model.language_model, Qwen2.5-VL uses model.model
+    if hasattr(model.model, 'language_model'):
+        # Qwen3-VL structure
+        llm_module = model.model.language_model
+    else:
+        # Qwen2.5-VL structure
+        llm_module = model.model
+
     if model_args.tune_mm_llm:
-        for n, p in model.model.named_parameters():
+        for n, p in llm_module.named_parameters():
             p.requires_grad = True
         model.lm_head.requires_grad = True
     else:
-        for n, p in model.model.named_parameters():
+        for n, p in llm_module.named_parameters():
             p.requires_grad = False
         model.lm_head.requires_grad = False
 
@@ -94,7 +103,7 @@ def set_model(model_args, model):
         # vggt is frozen
         for n, p in model.geometry_encoder.named_parameters():
             p.requires_grad = False
-    
+
     if model_args.use_pointer_memory and not model_args.use_preprocessed_input:
         # point3r memory is frozen
         for n, p in model.point3r_model.named_parameters():
@@ -114,7 +123,74 @@ def train(attn_implementation="flash_attention_2"):
     os.makedirs(training_args.output_dir, exist_ok=True)
 
     print('='*70)
-    if "qwen2.5" in model_args.model_name_or_path.lower():
+    if "qwen3" in model_args.model_name_or_path.lower():
+        if getattr(model_args, "use_pointer_memory", False):
+            from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
+            from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
+            config = AutoConfig.from_pretrained(model_args.model_name_or_path)
+            if hasattr(config, "use_pointer_memory") and config.use_pointer_memory != model_args.use_pointer_memory:
+                raise ValueError(
+                    "The use_pointer_memory in config and model_args are not consistent. "
+                    "Please check the model config."
+                )
+            for k in [
+                "use_pointer_memory",
+                "use_preprocessed_input",
+                "point3r_model_path",
+                "pointer_memory_size"
+            ]:
+                setattr(config, k, getattr(model_args, k))
+
+            assert model_args.use_preprocessed_input or model_args.point3r_model_path is not None, \
+                "When use_pointer_memory is True, use_preprocessed_input must be True or point3r_model_path must be set in the config."
+            model = Qwen3VLForConditionalGenerationWithPoint3R.from_pretrained(
+                pretrained_model_name_or_path=model_args.model_name_or_path,
+                config=config,
+                cache_dir=training_args.cache_dir,
+                attn_implementation=attn_implementation,
+                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                point3r_model_path=model_args.point3r_model_path
+            )
+
+            base_processor = AutoProcessor.from_pretrained(
+                model_args.model_name_or_path,
+                use_fast=True,
+                cache_dir=training_args.cache_dir,
+                min_pixels=data_args.min_pixels,
+                max_pixels=data_args.max_pixels
+            )
+
+            # Create Point3R processor with pointer token support for Qwen3-VL
+            processor = Qwen3VLProcessorWithPoint3R(
+                image_processor=base_processor.image_processor,
+                tokenizer=base_processor.tokenizer,
+                video_processor=base_processor.video_processor if hasattr(base_processor, 'video_processor') else None,
+                chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+            )
+
+            # Store pointer token ID in model config for proper processing
+            model.config.pointer_token_id = processor.pointer_token_id
+            model.pointer_token_id = processor.pointer_token_id
+
+            # Resize token embeddings to accommodate new pointer token
+            model.resize_token_embeddings(len(processor.tokenizer))
+
+            data_args.image_processor = processor.image_processor
+            data_args.model_type = "qwen3vl-spatial"  # Use 4D RoPE for pointer memory
+        else:
+            from qwen_vl.model.qwen3_vl.modular_qwen3_vl import Qwen3VLForConditionalGeneration
+            model = Qwen3VLForConditionalGeneration.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                attn_implementation=attn_implementation,
+                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+            )
+            data_args.image_processor = AutoProcessor.from_pretrained(
+                model_args.model_name_or_path
+                ).image_processor
+            data_args.model_type = "qwen3vl"
+
+    elif "qwen2.5" in model_args.model_name_or_path.lower():
         if getattr(model_args, "use_pointer_memory", False):
             from qwen_vl.model.modeling_qwen_point3r import Qwen2_5_VLForConditionalGenerationWithPoint3R
             from qwen_vl.model.processing_qwen2_5_vl import Qwen2_5_VLProcessorWithPoint3R
@@ -258,8 +334,18 @@ def train(attn_implementation="flash_attention_2"):
     set_model(model_args, model)
 
     if torch.distributed.get_rank() == 0:
-        model.visual.print_trainable_parameters()
-        model.model.print_trainable_parameters()
+        # Get visual module - same for both Qwen2.5-VL and Qwen3-VL
+        visual_module = model.visual if hasattr(model, 'visual') else model.model.visual
+        if hasattr(visual_module, 'print_trainable_parameters'):
+            visual_module.print_trainable_parameters()
+
+        # Get LLM module - Qwen3-VL uses model.model.language_model, Qwen2.5-VL uses model.model
+        if hasattr(model.model, 'language_model'):
+            llm_module = model.model.language_model
+        else:
+            llm_module = model.model
+        if hasattr(llm_module, 'print_trainable_parameters'):
+            llm_module.print_trainable_parameters()
 
     if model_args.use_geometry_encoder:
         setattr(data_args, "use_geometry_encoder", model_args.use_geometry_encoder)

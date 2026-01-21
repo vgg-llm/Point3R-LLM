@@ -206,11 +206,15 @@ def get_rope_index_txyz(
                 text_len = len(input_tokens) - st
                 llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(4, -1) + st_idx)
 
-            llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(4, -1)
-            position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
-            # Use only temporal dimension (dim 0) for consistency with autoregressive generation
-            mrope_position_deltas.append(llm_positions[0].max() + 1 - len(total_input_ids[i]))
-        mrope_position_deltas = torch.tensor(mrope_position_deltas, device=input_ids.device).unsqueeze(1)
+            if len(llm_pos_ids_list) > 0:
+                llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(4, -1)
+                position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
+                # Use only temporal dimension (dim 0) for consistency with autoregressive generation
+                mrope_position_deltas.append(llm_positions[0].max() + 1 - len(total_input_ids[i]))
+            else:
+                # Empty sequence case
+                mrope_position_deltas.append(0)
+        mrope_position_deltas = torch.tensor(mrope_position_deltas, device=total_input_ids.device).unsqueeze(1)
         return position_ids, mrope_position_deltas
     elif input_ids is not None and pointer_memory_embeds is not None:
         total_input_ids = input_ids
@@ -304,13 +308,17 @@ def get_rope_index_txyz(
                     current_pos += text_len
                     i_token = text_end
 
-            llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(4, -1)
-            position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
-            # For pointer tokens, use only temporal dimension (dim 0) since height/width/depth
-            # are absolute coordinates in 3D space, not sequential positions
-            mrope_position_deltas.append(llm_positions[0].max() + 1 - len(total_input_ids[i]))
+            if len(llm_pos_ids_list) > 0:
+                llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(4, -1)
+                position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
+                # For pointer tokens, use only temporal dimension (dim 0) since height/width/depth
+                # are absolute coordinates in 3D space, not sequential positions
+                mrope_position_deltas.append(llm_positions[0].max() + 1 - len(total_input_ids[i]))
+            else:
+                # Empty sequence case
+                mrope_position_deltas.append(0)
 
-        mrope_position_deltas = torch.tensor(mrope_position_deltas, device=input_ids.device).unsqueeze(1)
+        mrope_position_deltas = torch.tensor(mrope_position_deltas, device=total_input_ids.device).unsqueeze(1)
         return position_ids, mrope_position_deltas
     else:
         if attention_mask is not None:
@@ -507,15 +515,19 @@ def get_rope_index_25(
                     torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx
                 )
 
-            llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
-            position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(
-                position_ids.device
-            )
-            mrope_position_deltas.append(
-                llm_positions.max() + 1 - len(total_input_ids[i])
-            )
+            if len(llm_pos_ids_list) > 0:
+                llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
+                position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(
+                    position_ids.device
+                )
+                mrope_position_deltas.append(
+                    llm_positions.max() + 1 - len(total_input_ids[i])
+                )
+            else:
+                # Empty sequence case
+                mrope_position_deltas.append(0)
         mrope_position_deltas = torch.tensor(
-            mrope_position_deltas, device=input_ids.device
+            mrope_position_deltas, device=total_input_ids.device
         ).unsqueeze(1)
         return position_ids, mrope_position_deltas
     else:
@@ -700,15 +712,19 @@ def get_rope_index_2(
                     torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx
                 )
 
-            llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
-            position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(
-                position_ids.device
-            )
-            mrope_position_deltas.append(
-                llm_positions.max() + 1 - len(total_input_ids[i])
-            )
+            if len(llm_pos_ids_list) > 0:
+                llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
+                position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(
+                    position_ids.device
+                )
+                mrope_position_deltas.append(
+                    llm_positions.max() + 1 - len(total_input_ids[i])
+                )
+            else:
+                # Empty sequence case
+                mrope_position_deltas.append(0)
         mrope_position_deltas = torch.tensor(
-            mrope_position_deltas, device=input_ids.device
+            mrope_position_deltas, device=total_input_ids.device
         ).unsqueeze(1)
         return position_ids, mrope_position_deltas
     else:

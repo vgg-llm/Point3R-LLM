@@ -9,7 +9,7 @@ setup(
     install_requires=[
         "torch==2.5.1",
         "torchvision==0.20.1",
-        "transformers==4.50.0",
+        "transformers==4.57.6",  # transformers-4.57.0 is required for Qwen3-VL, but it is not compatible with 4.50.0.
         "deepspeed==0.16.4",
         "flash_attn==2.7.4.post1",
         "triton==3.1.0",

@@ -4,6 +4,7 @@
 #             the file from the modular. If any change should be done, please apply the change to the
 #                          modular_qwen3_vl.py file directly. One of our CI enforces this.
 #                🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨
+# coding=utf-8
 # Copyright 2025 The Qwen Team and The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,20 +19,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional, Union
+
 import numpy as np
 
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.image_utils import ImageInput
-from transformers.processing_utils import MultiModalData, ProcessingKwargs, ProcessorMixin, Unpack
+from transformers.processing_utils import ImagesKwargs, MultiModalData, ProcessingKwargs, ProcessorMixin, Unpack, VideosKwargs
 from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
-from transformers.utils import auto_docstring, logging
+from transformers.utils import logging
 from transformers.video_utils import VideoInput
 
 
 logger = logging.get_logger(__name__)
 
 
+class Qwen3VLVideosProcessorKwargs(VideosKwargs, total=False):
+    pass
+
+
+class Qwen3VLImagesKwargs(ImagesKwargs):
+    min_pixels: Optional[int]
+    max_pixels: Optional[int]
+    patch_size: Optional[int]
+    temporal_patch_size: Optional[int]
+    merge_size: Optional[int]
+
+
 class Qwen3VLProcessorKwargs(ProcessingKwargs, total=False):
+    images_kwargs: Qwen3VLImagesKwargs
+    videos_kwargs: Qwen3VLVideosProcessorKwargs
     _defaults = {
         "text_kwargs": {
             "padding": False,
@@ -42,9 +59,29 @@ class Qwen3VLProcessorKwargs(ProcessingKwargs, total=False):
     }
 
 
-@auto_docstring
 class Qwen3VLProcessor(ProcessorMixin):
+    r"""
+    Constructs a Qwen3VL processor which wraps a Qwen3VL image processor and a Qwen2 tokenizer into a single processor.
+    [`Qwen3VLProcessor`] offers all the functionalities of [`Qwen2VLImageProcessor`] and [`Qwen2TokenizerFast`]. See the
+    [`~Qwen3VLProcessor.__call__`] and [`~Qwen3VLProcessor.decode`] for more information.
+    Args:
+        image_processor ([`Qwen2VLImageProcessor`], *optional*):
+            The image processor is a required input.
+        tokenizer ([`Qwen2TokenizerFast`], *optional*):
+            The tokenizer is a required input.
+        video_processor ([`Qwen3VLVideoProcessor`], *optional*):
+            The video processor is a required input.
+        chat_template (`str`, *optional*): A Jinja template which will be used to convert lists of messages
+            in a chat into a tokenizable string.
+    """
+
+    attributes = ["image_processor", "tokenizer", "video_processor"]
+    image_processor_class = "AutoImageProcessor"
+    video_processor_class = "AutoVideoProcessor"
+    tokenizer_class = ("Qwen2Tokenizer", "Qwen2TokenizerFast")
+
     def __init__(self, image_processor=None, tokenizer=None, video_processor=None, chat_template=None, **kwargs):
+        super().__init__(image_processor, tokenizer, video_processor, chat_template=chat_template)
         self.image_token = "<|image_pad|>" if not hasattr(tokenizer, "image_token") else tokenizer.image_token
         self.video_token = "<|video_pad|>" if not hasattr(tokenizer, "video_token") else tokenizer.video_token
         self.image_token_id = (
@@ -57,7 +94,6 @@ class Qwen3VLProcessor(ProcessorMixin):
             if getattr(tokenizer, "video_token_id", None)
             else tokenizer.convert_tokens_to_ids(self.video_token)
         )
-        super().__init__(image_processor, tokenizer, video_processor, chat_template=chat_template)
         self.vision_start_token = (
             "<|vision_start|>" if not hasattr(tokenizer, "vision_start_token") else tokenizer.vision_start_token
         )
@@ -75,15 +111,37 @@ class Qwen3VLProcessor(ProcessorMixin):
             else tokenizer.convert_tokens_to_ids(self.vision_end_token)
         )
 
-    @auto_docstring
     def __call__(
         self,
         images: ImageInput = None,
-        text: TextInput | PreTokenizedInput | list[TextInput] | list[PreTokenizedInput] = None,
+        text: Union[TextInput, PreTokenizedInput, list[TextInput], list[PreTokenizedInput]] = None,
         videos: VideoInput = None,
         **kwargs: Unpack[Qwen3VLProcessorKwargs],
     ) -> BatchFeature:
-        r"""
+        """
+        Main method to prepare for the model one or several sequences(s) and image(s). This method forwards the `text`
+        and `kwargs` arguments to Qwen2TokenizerFast's [`~Qwen2TokenizerFast.__call__`] if `text` is not `None` to encode
+        the text. To prepare the vision inputs, this method forwards the `vision_infos` and `kwrags` arguments to
+        Qwen2VLImageProcessor's [`~Qwen2VLImageProcessor.__call__`] if `vision_infos` is not `None`.
+
+        Args:
+            images (`PIL.Image.Image`, `np.ndarray`, `torch.Tensor`, `list[PIL.Image.Image]`, `list[np.ndarray]`, `list[torch.Tensor]`):
+                The image or batch of images to be prepared. Each image can be a PIL image, NumPy array or PyTorch
+                tensor. Both channels-first and channels-last formats are supported.
+            text (`str`, `list[str]`, `list[list[str]]`):
+                The sequence or batch of sequences to be encoded. Each sequence can be a string or a list of strings
+                (pretokenized string). If the sequences are provided as list of strings (pretokenized), you must set
+                `is_split_into_words=True` (to lift the ambiguity with a batch of sequences).
+            videos (`np.ndarray`, `torch.Tensor`, `list[np.ndarray]`, `list[torch.Tensor]`):
+                The image or batch of videos to be prepared. Each video can be a 4D NumPy array or PyTorch
+                tensor, or a nested list of 3D frames. Both channels-first and channels-last formats are supported.
+            return_tensors (`str` or [`~utils.TensorType`], *optional*):
+                If set, will return tensors of a particular framework. Acceptable values are:
+                - `'tf'`: Return TensorFlow `tf.constant` objects.
+                - `'pt'`: Return PyTorch `torch.Tensor` objects.
+                - `'np'`: Return NumPy `np.ndarray` objects.
+                - `'jax'`: Return JAX `jnp.ndarray` objects.
+
         Returns:
             [`BatchFeature`]: A [`BatchFeature`] with the following fields:
 
@@ -112,10 +170,11 @@ class Qwen3VLProcessor(ProcessorMixin):
             videos_inputs = self.video_processor(videos=videos, **output_kwargs["videos_kwargs"])
             video_grid_thw = videos_inputs["video_grid_thw"]
             # If user has not requested video metadata, pop it
-            if not kwargs.get("return_metadata"):
+            if "return_metadata" not in kwargs:
                 video_metadata = videos_inputs.pop("video_metadata")
             else:
                 video_metadata = videos_inputs["video_metadata"]
+            video_grid_thw = videos_inputs["video_grid_thw"]
         else:
             videos_inputs = {}
             video_grid_thw = None
@@ -252,7 +311,7 @@ class Qwen3VLProcessor(ProcessorMixin):
             **kwargs,
         )
 
-    def _calculate_timestamps(self, indices: list[int] | np.ndarray, video_fps: float, merge_size: int = 2):
+    def _calculate_timestamps(self, indices: Union[list[int], np.ndarray], video_fps: float, merge_size: int = 2):
         if not isinstance(indices, list):
             indices = indices.tolist()
         if len(indices) % merge_size != 0:
@@ -265,10 +324,163 @@ class Qwen3VLProcessor(ProcessorMixin):
         ]
         return timestamps
 
-# TODO: implement Qwen3VLProcessorWithPoint3R
 class Qwen3VLProcessorWithPoint3R(Qwen3VLProcessor):
-    def __init__(self, image_processor=None, tokenizer=None, video_processor=None, chat_template=None, **kwargs):
-        super().__init__(image_processor, tokenizer, video_processor, chat_template, **kwargs)
-        raise NotImplementedError
+    r"""
+    Constructs a Qwen3-VL processor with Point3R Memory support.
 
-__all__ = ["Qwen3VLProcessor"] # TODO: Create "Qwen3_VLProcessorWithPoint3R"
+    This processor extends `Qwen3VLProcessor` to handle pointer tokens for 3D point memory
+    integration. We assume that Vision-encoded features are already stored in the pointer.
+
+    Args:
+        image_processor ([`Qwen2VLImageProcessorFast`], *optional*):
+            The image processor is a required input.
+        tokenizer ([`Qwen2TokenizerFast`], *optional*):
+            The tokenizer is a required input.
+        video_processor ([`Qwen3VLVideoProcessor`], *optional*):
+            The video processor for handling video inputs.
+        chat_template (`str`, *optional*): A Jinja template which will be used to convert lists of messages
+            in a chat into a tokenizable string.
+    """
+
+    def __init__(self, image_processor=None, tokenizer=None, video_processor=None, chat_template=None, **kwargs):
+        self.pointer_token = "<|pointer_pad|>"
+        super().__init__(image_processor, tokenizer, video_processor, chat_template=chat_template, **kwargs)
+        self.tokenizer.add_special_tokens({"additional_special_tokens": [self.pointer_token]})
+        # Store the pointer token ID for later use
+        self.pointer_token_id = self.tokenizer.convert_tokens_to_ids(self.pointer_token)
+
+    def __call__(
+        self,
+        images: ImageInput = None,
+        text: TextInput | PreTokenizedInput | list[TextInput] | list[PreTokenizedInput] = None,
+        videos: VideoInput = None,
+        pointers=None,
+        **kwargs: Unpack[Qwen3VLProcessorKwargs],
+    ) -> BatchFeature:
+        r"""
+        Args:
+            pointers: Pointer memory input from Point3R, containing corresponding Qwen features.
+                Shape: (num_pointers, hidden_size)
+
+        Returns:
+            [`BatchFeature`]: A [`BatchFeature`] with the following fields:
+
+            - **input_ids** -- List of token ids to be fed to a model. Returned when `text` is not `None`.
+            - **attention_mask** -- List of indices specifying which tokens should be attended to by the model (when
+              `return_attention_mask=True` or if *"attention_mask"* is in `self.model_input_names` and if `text` is not
+              `None`).
+            - **pixel_values** -- Pixel values to be fed to a model. Returned when `images` is not `None`.
+            - **pixel_values_videos** -- Pixel values of videos to be fed to a model. Returned when `videos` is not `None`.
+            - **image_grid_thw** -- List of image 3D grid in LLM. Returned when `images` is not `None`.
+            - **video_grid_thw** -- List of video 3D grid in LLM. Returned when `videos` is not `None`.
+        """
+        output_kwargs = self._merge_kwargs(
+            Qwen3VLProcessorKwargs,
+            tokenizer_init_kwargs=self.tokenizer.init_kwargs,
+            **kwargs,
+        )
+        if images is not None:
+            image_inputs = self.image_processor(images=images, **output_kwargs["images_kwargs"])
+            image_grid_thw = image_inputs["image_grid_thw"]
+        else:
+            image_inputs = {}
+            image_grid_thw = None
+
+        if videos is not None:
+            videos_inputs = self.video_processor(videos=videos, **output_kwargs["videos_kwargs"])
+            video_grid_thw = videos_inputs["video_grid_thw"]
+            # If user has not requested video metadata, pop it
+            if not kwargs.get("return_metadata"):
+                video_metadata = videos_inputs.pop("video_metadata")
+            else:
+                video_metadata = videos_inputs["video_metadata"]
+        else:
+            videos_inputs = {}
+            video_grid_thw = None
+
+        # Handle pointer tokens
+        if pointers is not None:
+            pointer_num_tok = pointers.shape[0]
+        else:
+            pointer_num_tok = None
+
+        if not isinstance(text, list):
+            text = [text]
+
+        text = text.copy()  # below lines change text in-place
+        if image_grid_thw is not None:
+            merge_length = self.image_processor.merge_size**2
+            index = 0
+            for i in range(len(text)):
+                while self.image_token in text[i]:
+                    num_image_tokens = image_grid_thw[index].prod() // merge_length
+                    text[i] = text[i].replace(self.image_token, "<|placeholder|>" * num_image_tokens, 1)
+                    index += 1
+                text[i] = text[i].replace("<|placeholder|>", self.image_token)
+
+        if video_grid_thw is not None:
+            merge_length = self.video_processor.merge_size**2
+            index = 0
+            for i in range(len(text)):
+                while self.video_token in text[i]:
+                    metadata = video_metadata[index]
+                    if metadata.fps is None:
+                        logger.warning_once(
+                            "Qwen3VL requires frame timestamps to construct prompts, but the `fps` of the input video could not be inferred. "
+                            "Probably `video_metadata` was missing from inputs and you passed pre-sampled frames. "
+                            "Defaulting to `fps=24`. Please provide `video_metadata` for more accurate results."
+                        )
+                        metadata.fps = 24 if metadata.fps is None else metadata.fps
+
+                    # if timestamps are not provided, calculate them
+                    curr_timestamp = self._calculate_timestamps(
+                        metadata.frames_indices,
+                        metadata.fps,
+                        self.video_processor.merge_size,
+                    )
+
+                    video_placeholder = ""
+                    frame_seqlen = video_grid_thw[index][1:].prod() // merge_length
+                    for frame_idx in range(video_grid_thw[index][0]):
+                        curr_time = curr_timestamp[frame_idx]
+                        video_placeholder += f"<{curr_time:.1f} seconds>"
+                        video_placeholder += (
+                            self.vision_start_token + "<|placeholder|>" * frame_seqlen + self.vision_end_token
+                        )
+                    if f"{self.vision_start_token}{self.video_token}{self.vision_end_token}" in text[i]:
+                        text[i] = text[i].replace(
+                            f"{self.vision_start_token}{self.video_token}{self.vision_end_token}", video_placeholder, 1
+                        )
+                    else:
+                        # vllm may input video token directly
+                        text[i] = text[i].replace(self.video_token, video_placeholder, 1)
+                    index += 1
+
+                text[i] = text[i].replace("<|placeholder|>", self.video_token)
+
+        # Handle pointer tokens expansion
+        if pointer_num_tok is not None:
+            for i in range(len(text)):
+                while self.pointer_token in text[i]:
+                    text[i] = text[i].replace(
+                        self.pointer_token,
+                        "<|placeholder|>" * pointer_num_tok,
+                        1,
+                    )
+                text[i] = text[i].replace("<|placeholder|>", self.pointer_token)
+
+        return_tensors = output_kwargs["text_kwargs"].pop("return_tensors", None)
+        return_mm_token_type_ids = output_kwargs["text_kwargs"].pop("return_mm_token_type_ids", None)
+        text_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
+        self._check_special_mm_tokens(text, text_inputs, modalities=["image", "video"])
+
+        if return_mm_token_type_ids:
+            array_ids = np.array(text_inputs["input_ids"])
+            mm_token_type_ids = np.zeros_like(text_inputs["input_ids"])
+            mm_token_type_ids[array_ids == self.image_token_id] = 1
+            text_inputs["mm_token_type_ids"] = mm_token_type_ids.tolist()
+
+        return BatchFeature(data={**text_inputs, **image_inputs, **videos_inputs}, tensor_type=return_tensors)
+
+
+__all__ = ["Qwen3VLProcessor", "Qwen3VLProcessorWithPoint3R"]
