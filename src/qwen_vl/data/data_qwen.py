@@ -572,13 +572,6 @@ class LazySupervisedDataset(Dataset):
                 pointer_memory_embeds=pointer_memory_embeds,
                 pointer_positions=pointer_positions
             )
-            # For pointer data, position_ids are standard sequential positions
-            position_ids = (
-                torch.arange(0, data_dict["input_ids"].size(1))
-                .view(1, -1)
-                .unsqueeze(0)
-                .expand(3, -1, -1)
-            )
 
             # Store pointer memory for later use
             pointer_memory_embeds_to_store = pointer_memory_embeds
@@ -735,6 +728,8 @@ class DataCollatorForSupervisedDataset(object):
             pointer_positions = [instance["pointer_positions"] for instance in instances]
             # Concatenate along the first dimension (number of pointer tokens)
             batch["pointer_positions"] = torch.cat(pointer_positions, dim=0)
+
+        # TODO: add memory_feat later
         
         return batch
 
