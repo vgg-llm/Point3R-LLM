@@ -42,7 +42,7 @@ torchrun --nproc_per_node=$NPROC_PER_NODE \
             --model_name_or_path $MODEL_PATH \
             --tune_mm_llm True \
             --tune_mm_vision False \
-            --tune_mm_mlp True \
+            --tune_mm_mlp False \
             --dataset_use $DATASETS \
             --output_dir $OUTPUT_DIR \
             --cache_dir $CACHE_DIR \

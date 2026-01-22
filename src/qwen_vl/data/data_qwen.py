@@ -512,7 +512,7 @@ class LazySupervisedDataset(Dataset):
 
             num_pointer_tokens = pointer_memory_embeds.shape[0]
 
-            max_pointer_tokens = 10000  # TODO: add this to data_args
+            max_pointer_tokens = 8000  # TODO: add this to data_args
             if num_pointer_tokens > max_pointer_tokens: 
                 num_pointer_tokens = max_pointer_tokens
                 pointer_memory_embeds = pointer_memory_embeds[:max_pointer_tokens].clone()

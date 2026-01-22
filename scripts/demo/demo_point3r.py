@@ -35,8 +35,11 @@ def main():
         from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
         # Load model with memory-efficient settings
         print(f"Loading model from: {model_path}")
+        model_args = "merge_memory_feat=True,memory_fusion_method=add,tune_memory_feature_projector=True,tune_memory_feature_fusion=True"
+        print(f"Model args:", model_args)
         model = Qwen3VLForConditionalGenerationWithPoint3R.from_pretrained(
             model_path,
+            model_args=model_args,
             cache_dir="./cache",
             torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
             device_map="auto" if device is None else device,  # Automatically distribute model across available devices
@@ -421,7 +424,7 @@ def preprocess_images(
     p = Path(input_images_dir)
     image_paths = sorted(list(p.glob("*.jpg")) + list(p.glob("*.jpeg")))
     # Uniformly sample 32 paths
-    sample_ct = 32
+    sample_ct = 8
     if len(image_paths) > sample_ct:
         step = len(image_paths) / sample_ct
         image_paths = [image_paths[int(i * step)] for i in range(sample_ct)]

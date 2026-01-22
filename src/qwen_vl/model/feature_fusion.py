@@ -46,109 +46,27 @@ class CrossAttentionBlock(nn.Module):
             nn.Dropout(dropout)
         )
         
-    def get_2d_sincos_pos_embed(self, height: int, width: int, embed_dim: int, device: torch.device) -> torch.Tensor:
+    def forward(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
         """
-        Generate 2D sinusoidal position embeddings.
-        
-        Args:
-            height: Height of the grid
-            width: Width of the grid  
-            embed_dim: Embedding dimension
-            device: Device to create tensor on
-            
-        Returns:
-            pos_embed: Position embeddings of shape [height*width, embed_dim]
-        """
-        # Generate grid coordinates
-        grid_h = torch.arange(height, dtype=torch.float32, device=device)
-        grid_w = torch.arange(width, dtype=torch.float32, device=device)
-        grid = torch.meshgrid(grid_h, grid_w, indexing='ij')
-        grid = torch.stack(grid, dim=0)  # [2, height, width]
-        
-        pos_embed = self.get_2d_sincos_pos_embed_from_grid(embed_dim, grid)
-        return pos_embed
-        
-    def get_2d_sincos_pos_embed_from_grid(self, embed_dim: int, grid: torch.Tensor) -> torch.Tensor:
-        """
-        Generate 2D sinusoidal position embeddings from grid.
-        
-        Args:
-            embed_dim: Embedding dimension
-            grid: Grid coordinates of shape [2, height, width]
-            
-        Returns:
-            pos_embed: Position embeddings of shape [height*width, embed_dim]
-        """
-        assert embed_dim % 2 == 0
-        
-        # Use half of dimensions to encode grid_h
-        emb_h = self.get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])  # [height*width, embed_dim//2]
-        emb_w = self.get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # [height*width, embed_dim//2]
-        
-        emb = torch.cat([emb_h, emb_w], dim=1)  # [height*width, embed_dim]
-        return emb
-        
-    def get_1d_sincos_pos_embed_from_grid(self, embed_dim: int, pos: torch.Tensor) -> torch.Tensor:
-        """
-        Generate 1D sinusoidal position embeddings.
-        
-        Args:
-            embed_dim: Embedding dimension
-            pos: Position tensor of shape [height, width]
-            
-        Returns:
-            emb: Position embeddings of shape [height*width, embed_dim]
-        """
-        assert embed_dim % 2 == 0
-        omega = torch.arange(embed_dim // 2, dtype=torch.float32, device=pos.device)
-        omega /= embed_dim / 2.
-        omega = 1. / 10000**omega  # [embed_dim//2]
-        
-        pos = pos.flatten()
-        out = torch.einsum('m,d->md', pos, omega)  # [height*width, embed_dim//2], outer product
-        
-        emb_sin = torch.sin(out)  # [height*width, embed_dim//2]
-        emb_cos = torch.cos(out)  # [height*width, embed_dim//2]
-        
-        emb = torch.cat([emb_sin, emb_cos], dim=1)  # [height*width, embed_dim]
-        return emb
-        
-    def forward(self, features_2d: torch.Tensor, features_3d: torch.Tensor, h_grid: int, w_grid: int) -> torch.Tensor:
-        # Normalize features
-        query = self.norm1_query(features_2d)
-        key = self.norm1_key(features_3d)
-        value = self.norm1_value(features_3d)
-        
-        # Add batch dimension if needed
-        if query.dim() == 2:
-            query = query.unsqueeze(0)
-            key = key.unsqueeze(0)
-            value = value.unsqueeze(0)
-            squeeze_output = True
-        else:
-            squeeze_output = False
-        
-        # Generate 2D position embeddings
-        pos_embed = self.get_2d_sincos_pos_embed(h_grid, w_grid, self.hidden_size, query.device).to(query.dtype)  # [h_grid*w_grid, hidden_size]
+        Cross-attention block without position embeddings.
 
-        # Add position embeddings to query and key
-        # Assuming features are organized as [batch_size, h_grid*w_grid, hidden_size]
-        query = query + pos_embed.unsqueeze(0)  # Broadcast across batch dimension
-        key = key + pos_embed.unsqueeze(0)
-            
-        # Cross-attention: 2D features as query, 3D features as key/value
-        attn_output, _ = self.cross_attention(query, key, value)
-        
-        if squeeze_output:
-            attn_output = attn_output.squeeze(0)
-            
-        # First residual connection
-        x = features_2d + attn_output
-        
-        # MLP with second residual connection
-        mlp_output = self.mlp(self.norm2(x))
-        x = x + mlp_output
-        
+        Args:
+            query: Query tensor (batch, seq_len, hidden_size)
+            key_value: Key/value tensor (batch, seq_len, hidden_size)
+        Returns:
+            Output tensor (batch, seq_len, hidden_size)
+        """
+        # Normalize
+        query_norm = self.norm1_query(query)
+        key_norm = self.norm1_key(key_value)
+        value_norm = self.norm1_value(key_value)
+
+        # Cross-attention (no position embeddings)
+        attn_output, _ = self.cross_attention(query_norm, key_norm, value_norm)
+
+        # Residual + MLP
+        x = query + attn_output
+        x = x + self.mlp(self.norm2(x))
         return x
 
 
@@ -192,51 +110,86 @@ class FeatureFusionModule(nn.Module):
             self.weight_2d = nn.Parameter(torch.tensor(0.5))
             self.weight_3d = nn.Parameter(torch.tensor(0.5))
     
-    def forward(self, features_2d: torch.Tensor, features_3d: torch.Tensor) -> torch.Tensor:
+    def forward(self, pointer_embeds: torch.Tensor, memory_embeds: torch.Tensor) -> torch.Tensor:
         """
-        Fuse 2D and 3D features.
-        
-        Args:
-            features_2d: 2D image features
-            features_3d: 3D geometry features
-        Returns:
-            Fused features
-        """
+        Fuse pointer embeddings and memory embeddings.
 
-        _, h_grid, w_grid, _ = features_3d.shape
+        Args:
+            pointer_embeds: Pointer memory embeddings (N, D)
+            memory_embeds: Merged memory features (N, D)
+        Returns:
+            Fused embeddings (N, D)
+        """
         if self.fusion_method == "add":
-            return features_2d + features_3d
-            
+            return pointer_embeds + memory_embeds
+
         elif self.fusion_method == "concat":
-            features_2d = self.norm1(features_2d)
-            features_3d = self.norm2(features_3d)
-            concat_features = torch.cat([features_2d, features_3d], dim=-1)
+            pointer_embeds_norm = self.norm1(pointer_embeds)
+            memory_embeds_norm = self.norm2(memory_embeds)
+            concat_features = torch.cat([pointer_embeds_norm, memory_embeds_norm], dim=-1)
             return self.projection(concat_features)
-            
+
         elif self.fusion_method == "cross_attention":
-            features_2d = features_2d.view(features_2d.size(0), -1, self.hidden_size)  # Flatten spatial dimensions
-            features_3d = features_3d.view(features_3d.size(0), -1, self.hidden_size)
-            x = features_2d
+            # Add batch dimension for attention: (N, D) -> (1, N, D)
+            pointer_embeds_batched = pointer_embeds.unsqueeze(0)
+            memory_embeds_batched = memory_embeds.unsqueeze(0)
+            x = pointer_embeds_batched
             for block in self.cross_attn_blocks:
-                x = block(x, features_3d, h_grid, w_grid)
-            return x
-            
+                x = block(x, memory_embeds_batched)
+            return x.squeeze(0)  # (1, N, D) -> (N, D)
+
         elif self.fusion_method == "gated":
-            features_2d = self.norm1(features_2d)
-            features_3d = self.norm2(features_3d)
-            concat_features = torch.cat([features_2d, features_3d], dim=-1)
+            pointer_embeds_norm = self.norm1(pointer_embeds)
+            memory_embeds_norm = self.norm2(memory_embeds)
+            concat_features = torch.cat([pointer_embeds_norm, memory_embeds_norm], dim=-1)
             gate = self.gate_projection(concat_features)
-            return gate * features_2d + (1 - gate) * features_3d
-            
+            return gate * pointer_embeds_norm + (1 - gate) * memory_embeds_norm
+
         elif self.fusion_method == "weighted":
-            # Normalize weights to sum to 1
             weight_sum = self.weight_2d + self.weight_3d
-            norm_weight_2d = self.weight_2d / weight_sum
-            norm_weight_3d = self.weight_3d / weight_sum
-            return norm_weight_2d * features_2d + norm_weight_3d * features_3d
-            
+            norm_weight_ptr = self.weight_2d / weight_sum
+            norm_weight_mem = self.weight_3d / weight_sum
+            return norm_weight_ptr * pointer_embeds + norm_weight_mem * memory_embeds
+
         else:
             raise ValueError(f"Unknown fusion method: {self.fusion_method}")
+
+
+class FeatureProjector(nn.Module):
+    """Simple feature projector similar to Qwen3VLVisionPatchMerger.
+
+    Projects features from input_dim to output_dim using:
+    LayerNorm -> Linear -> GELU -> Linear
+
+    Args:
+        input_dim: Input feature dimension (d_1)
+        output_dim: Output feature dimension (d_2)
+        hidden_dim: Optional hidden dimension for the MLP. Defaults to input_dim.
+    """
+
+    def __init__(self, input_dim: int, output_dim: int, hidden_dim: Optional[int] = None):
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.hidden_dim = hidden_dim if hidden_dim is not None else input_dim
+
+        self.norm = nn.LayerNorm(input_dim, eps=1e-6)
+        self.linear_fc1 = nn.Linear(input_dim, self.hidden_dim)
+        self.act_fn = nn.GELU()
+        self.linear_fc2 = nn.Linear(self.hidden_dim, output_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Project features from (N, d_1) to (N, d_2).
+
+        Args:
+            x: Input tensor of shape (N, input_dim)
+
+        Returns:
+            Output tensor of shape (N, output_dim)
+        """
+        x = self.norm(x)
+        x = self.linear_fc2(self.act_fn(self.linear_fc1(x)))
+        return x
 
 
 class GeometryFeatureMerger(nn.Module):

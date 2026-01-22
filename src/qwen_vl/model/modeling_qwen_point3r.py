@@ -36,12 +36,14 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
         # Pointer token ID obtained from tokenizer (set after tokenizer.add_special_tokens)
         self.pointer_token_id = getattr(config, 'pointer_token_id', None)
 
-        # Pointer memory merger for refining pointer embeddings
-        self.pointer_memory_merger = Qwen2_5_VLPatchMerger(
-            dim=config.vision_config.out_hidden_size,  # Output dimension (same as input)
-            context_dim=config.vision_config.out_hidden_size,  # Input dimension
-            spatial_merge_size=1  # No spatial merging, just feature refinement
-        )
+        self.use_pointer_memory_merger = False
+        if self.use_pointer_memory_merger: 
+            # Pointer memory merger for refining pointer embeddings
+            self.pointer_memory_merger = Qwen2_5_VLPatchMerger(
+                dim=config.vision_config.out_hidden_size,  # Output dimension (same as input)
+                context_dim=config.vision_config.out_hidden_size,  # Input dimension
+                spatial_merge_size=1  # No spatial merging, just feature refinement
+            )
 
         # Initialize memory feature fusion modules if enabled
         if getattr(config, 'merge_memory_feat', False):
@@ -52,7 +54,8 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
 
         # Initialize pointer modules to act as identity/residual to prevent numerical instability
         # This is critical when loading pretrained checkpoints that don't contain these modules
-        self._init_pointer_modules_as_identity()
+        if self.use_pointer_memory_merger: 
+            self._init_pointer_modules_as_identity()
 
         # Initialize memory fusion modules if enabled
         if getattr(config, 'merge_memory_feat', False):
@@ -102,7 +105,7 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
 
         # Create feature merger to match dimensions
         # Note: spatial_merge_size=1 because memory_feat is already token-level (no spatial structure)
-        self.memory_feature_merger = GeometryFeatureMerger(
+        self.memory_feature_projector = GeometryFeatureMerger(
             output_dim=output_dim,  # 3584
             hidden_dim=getattr(config, "memory_merger_hidden_dim", 4096),
             context_dim=memory_dim,  # 768
@@ -151,7 +154,7 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
 
         # Step 2: Apply merger to match dimensions (768 → 3584)
         # Output: (num_pointers, 1, 1, 3584)
-        merged_memory = self.memory_feature_merger(memory_feat_spatial)
+        merged_memory = self.memory_feature_projector(memory_feat_spatial)
 
         # Step 3: Flatten back to token-level
         # (num_pointers, 1, 1, 3584) → (num_pointers, 3584)
@@ -194,7 +197,7 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
             if self.pointer_memory_merger.mlp[2].bias is not None:
                 self.pointer_memory_merger.mlp[2].bias.zero_()
 
-            # RMSNorm is already initialized to ones (correct behavior)
+        #     # RMSNorm is already initialized to ones (correct behavior)
 
     def _init_memory_fusion_as_residual(self):
         """Initialize memory fusion modules to preserve input features initially.
@@ -202,14 +205,14 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
         This ensures that memory_feat fusion doesn't corrupt pointer embeddings
         when using pretrained checkpoints.
         """
-        if not hasattr(self, 'memory_feature_merger') or not hasattr(self, 'memory_feature_fusion'):
+        if not hasattr(self, 'memory_feature_projector') or not hasattr(self, 'memory_feature_fusion'):
             return
 
         import torch
 
         with torch.no_grad():
             # Initialize memory feature merger similarly
-            for module in self.memory_feature_merger.modules():
+            for module in self.memory_feature_projector.modules():
                 if isinstance(module, torch.nn.Linear):
                     # Scale down linear layer weights significantly
                     module.weight.data.mul_(0.001)
@@ -693,7 +696,8 @@ class Qwen2_5_VLForConditionalGenerationWithPoint3R(Qwen2_5_VLPreTrainedModel, G
                 pointer_memory_embeds = pointer_memory_embeds.type(self.visual.dtype)
 
                 # Apply pointer memory merger for feature refinement
-                pointer_memory_embeds = self.pointer_memory_merger(pointer_memory_embeds)
+                if self.use_pointer_memory_merger:
+                    pointer_memory_embeds = self.pointer_memory_merger(pointer_memory_embeds)
 
                 # Fuse with memory_feat if enabled
                 if getattr(self.config, 'merge_memory_feat', False) and memory_feat is not None:

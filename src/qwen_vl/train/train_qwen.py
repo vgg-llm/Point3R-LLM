@@ -86,34 +86,31 @@ def set_model(model_args, model):
         for n, p in visual_module.named_parameters():
             p.requires_grad = False
 
+    # Visual merger - controlled by tune_mm_mlp (only visual_module.merger)
     if model_args.tune_mm_mlp:
         for n, p in visual_module.merger.named_parameters():
             p.requires_grad = True
-        # Add pointer memory merger trainability control
-        if hasattr(model, 'pointer_memory_merger'):
-            for n, p in model.pointer_memory_merger.named_parameters():
-                p.requires_grad = True
-        # Add memory fusion modules trainability control
-        if hasattr(model, 'memory_feature_merger'):
-            for n, p in model.memory_feature_merger.named_parameters():
-                p.requires_grad = True
-        if hasattr(model, 'memory_feature_fusion'):
-            for n, p in model.memory_feature_fusion.named_parameters():
-                p.requires_grad = True
     else:
         for n, p in visual_module.merger.named_parameters():
             p.requires_grad = False
-        # Add pointer memory merger trainability control
-        if hasattr(model, 'pointer_memory_merger'):
-            for n, p in model.pointer_memory_merger.named_parameters():
-                p.requires_grad = False
-        # Add memory fusion modules trainability control
-        if hasattr(model, 'memory_feature_merger'):
-            for n, p in model.memory_feature_merger.named_parameters():
-                p.requires_grad = False
-        if hasattr(model, 'memory_feature_fusion'):
-            for n, p in model.memory_feature_fusion.named_parameters():
-                p.requires_grad = False
+
+    # Pointer memory merger - independent control
+    if hasattr(model, 'pointer_memory_merger'):
+        tune_pmm = getattr(model_args, 'tune_pointer_memory_merger', False)
+        for n, p in model.pointer_memory_merger.named_parameters():
+            p.requires_grad = tune_pmm
+
+    # Memory feature merger - independent control
+    if hasattr(model, 'memory_feature_projector'):
+        tune_mfm = getattr(model_args, 'tune_memory_feature_projector', False)
+        for n, p in model.memory_feature_projector.named_parameters():
+            p.requires_grad = tune_mfm
+
+    # Memory feature fusion - independent control
+    if hasattr(model, 'memory_feature_fusion'):
+        tune_mff = getattr(model_args, 'tune_memory_feature_fusion', False)
+        for n, p in model.memory_feature_fusion.named_parameters():
+            p.requires_grad = tune_mff
 
     # Get LLM module - Qwen3-VL uses model.model.language_model, Qwen2.5-VL uses model.model
     if hasattr(model.model, 'language_model'):

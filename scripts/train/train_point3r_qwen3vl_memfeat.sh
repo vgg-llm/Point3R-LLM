@@ -82,5 +82,6 @@ torchrun --nproc_per_node=$NPROC_PER_NODE \
             --use_preprocessed_input True \
             --merge_memory_feat True \
             --memory_fusion_method "add" \
-            --tune_mm_mlp True \
+            --tune_memory_feature_projector True \
+            --tune_memory_feature_fusion True \
             2>&1 | tee ${OUTPUT_DIR}/train.log 2>&1
