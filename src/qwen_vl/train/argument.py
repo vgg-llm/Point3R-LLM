@@ -24,6 +24,15 @@ class ModelArguments:
     point3r_model_path: str = field(default="./cache/point3r_512.pth")
     pointer_memory_size: int = field(default=512)
 
+    # Memory feature fusion parameters (Point3R)
+    merge_memory_feat: bool = field(default=False)
+    memory_fusion_method: str = field(default="add")
+    memory_fusion_attention_heads: int = field(default=8)
+    memory_fusion_dropout: float = field(default=0.1)
+    memory_fusion_num_layers: int = field(default=1)
+    memory_merger_hidden_dim: int = field(default=4096)
+    memory_merger_type: str = field(default="mlp")
+
 @dataclass
 class DataArguments:
     dataset_use: str = field(default="")

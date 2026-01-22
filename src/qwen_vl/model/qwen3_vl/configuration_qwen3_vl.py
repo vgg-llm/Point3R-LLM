@@ -265,6 +265,14 @@ class Qwen3VLConfig(PretrainedConfig):
         vision_start_token_id=151652,
         vision_end_token_id=151653,
         tie_word_embeddings=False,
+        # Memory feature fusion parameters (Point3R)
+        merge_memory_feat=False,
+        memory_fusion_method="add",
+        memory_fusion_attention_heads=8,
+        memory_fusion_dropout=0.1,
+        memory_fusion_num_layers=1,
+        memory_merger_hidden_dim=4096,
+        memory_merger_type="mlp",
         **kwargs,
     ):
         if isinstance(vision_config, dict):
@@ -281,6 +289,16 @@ class Qwen3VLConfig(PretrainedConfig):
         self.video_token_id = video_token_id
         self.vision_start_token_id = vision_start_token_id
         self.vision_end_token_id = vision_end_token_id
+
+        # Memory fusion config (Point3R)
+        self.merge_memory_feat = merge_memory_feat
+        self.memory_fusion_method = memory_fusion_method
+        self.memory_fusion_attention_heads = memory_fusion_attention_heads
+        self.memory_fusion_dropout = memory_fusion_dropout
+        self.memory_fusion_num_layers = memory_fusion_num_layers
+        self.memory_merger_hidden_dim = memory_merger_hidden_dim
+        self.memory_merger_type = memory_merger_type
+
         super().__init__(**kwargs, tie_word_embeddings=tie_word_embeddings)
 
 

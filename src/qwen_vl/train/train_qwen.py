@@ -170,7 +170,15 @@ def train(attn_implementation="flash_attention_2"):
                 "use_pointer_memory",
                 "use_preprocessed_input",
                 "point3r_model_path",
-                "pointer_memory_size"
+                "pointer_memory_size",
+                # Memory feature fusion parameters (Point3R)
+                "merge_memory_feat",
+                "memory_fusion_method",
+                "memory_fusion_attention_heads",
+                "memory_fusion_dropout",
+                "memory_fusion_num_layers",
+                "memory_merger_hidden_dim",
+                "memory_merger_type",
             ]:
                 setattr(config, k, getattr(model_args, k))
 

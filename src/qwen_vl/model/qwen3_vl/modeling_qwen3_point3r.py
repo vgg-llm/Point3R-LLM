@@ -5,6 +5,7 @@ from typing import Optional, Any, Tuple, List, Dict, Union
 from .modeling_qwen3_vl import Qwen3VLForConditionalGeneration, Qwen3VLCausalLMOutputWithPast
 from .configuration_qwen3_vl import Qwen3VLConfig
 from ..point3r.point3r import Point3R, Point3RConfig
+from ..feature_fusion import FeatureFusionModule, FeatureFusionConfig, GeometryFeatureMerger
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 from transformers.cache_utils import Cache
@@ -32,6 +33,11 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         if getattr(config, 'use_pointer_memory', False) and not getattr(config, 'use_preprocessed_input', False):
             self._init_point3r_memory(config)
 
+        # Initialize memory feature fusion modules if enabled
+        if getattr(config, 'merge_memory_feat', False):
+            self._init_memory_fusion(config)
+            self._init_memory_fusion_as_residual()
+
     def _init_point3r_memory(self, config):
         """Initialize Point3R model for on-the-fly 3D feature extraction."""
         inf = float('inf')
@@ -57,6 +63,115 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         )
         self.point3r_model = Point3R(point3r_config)
         self.point3r_model.eval()
+
+    def _init_memory_fusion(self, config):
+        """Initialize memory feature fusion modules for Point3R memory_feat integration.
+
+        This mirrors the pattern used in Qwen2_5_VLForConditionalGenerationWithPoint3R's
+        _init_memory_fusion method.
+        """
+        # Memory feature dimensions
+        # memory_feat: (num_pointers, 768) from Point3R dec_embed_dim
+        # pointer_memory_embeds: (num_pointers, 3584) from vision_config.out_hidden_size
+        memory_dim = 768  # Point3R dec_embed_dim (hardcoded in Point3RConfig)
+        output_dim = config.vision_config.out_hidden_size  # 3584
+
+        # Create feature merger to match dimensions
+        # Note: spatial_merge_size=1 because memory_feat is already token-level (no spatial structure)
+        self.memory_feature_merger = GeometryFeatureMerger(
+            output_dim=output_dim,  # 3584
+            hidden_dim=getattr(config, "memory_merger_hidden_dim", 4096),
+            context_dim=memory_dim,  # 768
+            spatial_merge_size=1,  # No spatial merging - already token-level features
+            merger_type=getattr(config, "memory_merger_type", "mlp")
+        )
+
+        # Create feature fusion module to combine memory_feat with pointer_memory_embeds
+        fusion_config = FeatureFusionConfig(
+            fusion_method=getattr(config, "memory_fusion_method", "add"),
+            hidden_size=output_dim,  # 3584
+            num_heads=getattr(config, "memory_fusion_attention_heads", 8),
+            dropout=getattr(config, "memory_fusion_dropout", 0.1),
+            num_layers=getattr(config, "memory_fusion_num_layers", 1)
+        )
+        self.memory_feature_fusion = FeatureFusionModule(fusion_config)
+
+    def _init_memory_fusion_as_residual(self):
+        """Initialize memory fusion modules to preserve input features initially.
+
+        This ensures that memory_feat fusion doesn't corrupt pointer embeddings
+        when using pretrained checkpoints.
+        """
+        if not hasattr(self, 'memory_feature_merger') or not hasattr(self, 'memory_feature_fusion'):
+            return
+
+        with torch.no_grad():
+            # Initialize memory feature merger with small weights
+            for module in self.memory_feature_merger.modules():
+                if isinstance(module, torch.nn.Linear):
+                    # Scale down linear layer weights significantly
+                    module.weight.data.mul_(0.001)
+                    if module.bias is not None:
+                        module.bias.data.zero_()
+
+            # Initialize fusion module based on fusion method
+            if hasattr(self.memory_feature_fusion, 'fusion_method'):
+                if self.memory_feature_fusion.fusion_method == "weighted":
+                    # Initialize weights to 0.5, 0.5 (balanced)
+                    if hasattr(self.memory_feature_fusion, 'weight_2d'):
+                        self.memory_feature_fusion.weight_2d.fill_(0.5)
+                    if hasattr(self.memory_feature_fusion, 'weight_3d'):
+                        self.memory_feature_fusion.weight_3d.fill_(0.5)
+                elif self.memory_feature_fusion.fusion_method in ["cross_attention", "self_attention"]:
+                    # Scale down attention layers
+                    for module in self.memory_feature_fusion.modules():
+                        if isinstance(module, torch.nn.Linear):
+                            module.weight.data.mul_(0.01)
+                            if module.bias is not None:
+                                module.bias.data.zero_()
+
+    def _process_memory_features(self, pointer_memory_embeds, memory_feat):
+        """Process Point3R memory features and fuse with pointer embeddings.
+
+        This mirrors the pattern used in Qwen2_5_VLForConditionalGenerationWithPoint3R's
+        _process_memory_features method.
+
+        Args:
+            pointer_memory_embeds: Tensor of shape (num_pointers, 3584)
+                Qwen-aligned image embeddings from Point3R
+            memory_feat: Tensor of shape (num_pointers, 768)
+                Point3R internal decoder features
+
+        Returns:
+            Tensor of shape (num_pointers, 3584)
+                Fused features combining pointer embeddings with memory features
+        """
+        if memory_feat is None:
+            return pointer_memory_embeds
+
+        # Ensure memory_feat has correct dtype
+        memory_feat = memory_feat.to(pointer_memory_embeds.dtype)
+
+        # Step 1: Reshape memory_feat to add spatial dimensions for GeometryFeatureMerger
+        # memory_feat shape: (num_pointers, 768)
+        # GeometryFeatureMerger expects: (n_image, h_patch, w_patch, dim)
+        # Since memory_feat is already token-level, we treat each token as a 1x1 spatial patch
+        num_pointers, memory_dim = memory_feat.shape
+        memory_feat_spatial = memory_feat.view(num_pointers, 1, 1, memory_dim)
+
+        # Step 2: Apply merger to match dimensions (768 → 3584)
+        # Output: (num_pointers, 1, 1, 3584)
+        merged_memory = self.memory_feature_merger(memory_feat_spatial)
+
+        # Step 3: Flatten back to token-level
+        # (num_pointers, 1, 1, 3584) → (num_pointers, 3584)
+        merged_memory = merged_memory.view(num_pointers, -1)
+
+        # Step 4: Fuse with pointer_memory_embeds
+        # Both tensors now have shape (num_pointers, 3584)
+        fused_embeds = self.memory_feature_fusion(pointer_memory_embeds, merged_memory)
+
+        return fused_embeds
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
@@ -105,6 +220,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         pointer_memory_embeds: Optional[torch.Tensor] = None,
         pointer_positions: Optional[torch.Tensor] = None,
         deepstack_pointer_embeds: Optional[List[torch.Tensor]] = None,
+        memory_feat: Optional[torch.FloatTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> Tuple | Qwen3VLCausalLMOutputWithPast:
         """
@@ -114,6 +230,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             pointer_memory_embeds: Point3R memory embeddings (num_pointers, hidden_size)
             pointer_positions: 3D positions for each pointer (num_pointers, 3) as [h, w, d]
             deepstack_pointer_embeds: List of intermediate layer embeddings for pointers
+            memory_feat: Point3R internal decoder features (num_pointers, 768) for fusion
             ... (other args same as parent)
         """
         # Get input embeddings
@@ -154,6 +271,10 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
                     f"Pointer memory features and pointer tokens do not match: "
                     f"tokens: {n_pointer_tokens}, features {n_pointer_features}"
                 )
+
+            # Fuse with memory_feat if enabled (before masked_scatter)
+            if getattr(self.config, 'merge_memory_feat', False) and memory_feat is not None:
+                pointer_memory_embeds = self._process_memory_features(pointer_memory_embeds, memory_feat)
 
             mask = input_ids == self.pointer_token_id
             mask_unsqueezed = mask.unsqueeze(-1)
@@ -280,6 +401,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         pointer_memory_embeds=None,
         pointer_positions=None,
         deepstack_pointer_embeds=None,
+        memory_feat=None,
         **kwargs,
     ):
         """Prepare inputs for generation with pointer memory support."""
@@ -297,6 +419,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             pointer_memory_embeds=pointer_memory_embeds,
             pointer_positions=pointer_positions,
             deepstack_pointer_embeds=deepstack_pointer_embeds,
+            memory_feat=memory_feat,
             use_cache=use_cache,
             **kwargs,
         )
@@ -315,6 +438,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             model_inputs["pointer_memory_embeds"] = None
             model_inputs["pointer_positions"] = None
             model_inputs["deepstack_pointer_embeds"] = None
+            model_inputs["memory_feat"] = None
         return model_inputs
 
     def _get_pointer_nums(
@@ -355,7 +479,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         visual_keys = [
             "pixel_values", "image_grid_thw", "pixel_values_videos",
             "video_grid_thw", "pointer_memory_embeds", "pointer_positions",
-            "deepstack_pointer_embeds"
+            "deepstack_pointer_embeds", "memory_feat"
         ]
 
         def _expand_dict_for_generation_visual(dict_to_expand):
@@ -418,6 +542,12 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
                         _repeat_interleave_samples(layer_embeds, lengths=lengths, repeat_times=expand_size)
                         for layer_embeds in dict_to_expand[key]
                     ]
+                elif key == "memory_feat" and dict_to_expand[key] is not None:
+                    # memory_feat has same structure as pointer_memory_embeds
+                    lengths = list(pointer_nums)
+                    dict_to_expand[key] = _repeat_interleave_samples(
+                        dict_to_expand[key], lengths=lengths, repeat_times=expand_size
+                    )
 
             return dict_to_expand
 
