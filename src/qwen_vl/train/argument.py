@@ -34,7 +34,7 @@ class ModelArguments:
     memory_merger_type: str = field(default="mlp")
 
     # Independent training control for memory modules
-    tune_pointer_memory_merger: bool = field(default=False)
+    tune_feature_projector: bool = field(default=False)
     tune_memory_feature_projector: bool = field(default=False)
     tune_memory_feature_fusion: bool = field(default=False)
 

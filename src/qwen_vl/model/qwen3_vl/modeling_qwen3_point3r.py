@@ -37,6 +37,10 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         if getattr(config, 'merge_memory_feat', False):
             self._init_memory_fusion(config)
             self._init_memory_fusion_as_residual()
+        elif getattr(config, 'tune_feature_projector', False):
+            self._init_feature_projector(config)
+
+        self.post_init()
 
     def _init_point3r_memory(self, config):
         """Initialize Point3R model for on-the-fly 3D feature extraction."""
@@ -63,6 +67,20 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         )
         self.point3r_model = Point3R(point3r_config)
         self.point3r_model.eval()
+
+    def _init_feature_projector(self, config):
+        """Initialize feature projector for pointer embeddings (without memory fusion).
+
+        This projector maintains dimensions (no size change) and is used when
+        memory fusion is disabled but feature projection is enabled.
+        """
+        hidden_size = config.text_config.hidden_size
+
+        self.feature_projector = FeatureProjector(
+            input_dim=hidden_size,
+            output_dim=hidden_size,  # Same dimension - no size change
+            hidden_dim=getattr(config, "memory_merger_hidden_dim", 4096),
+        )
 
     def _init_memory_fusion(self, config):
         """Initialize memory feature fusion modules for Point3R memory_feat integration.
@@ -274,6 +292,9 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             # Fuse with memory_feat if enabled (before masked_scatter)
             if getattr(self.config, 'merge_memory_feat', False) and memory_feat is not None:
                 pointer_memory_embeds = self._process_memory_features(pointer_memory_embeds, memory_feat)
+            # Simple projection without memory fusion
+            elif hasattr(self, 'feature_projector'):
+                pointer_memory_embeds = self.feature_projector(pointer_memory_embeds)
 
             mask = input_ids == self.pointer_token_id
             mask_unsqueezed = mask.unsqueeze(-1)

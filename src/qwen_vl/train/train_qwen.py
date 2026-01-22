@@ -94,11 +94,11 @@ def set_model(model_args, model):
         for n, p in visual_module.merger.named_parameters():
             p.requires_grad = False
 
-    # Pointer memory merger - independent control
-    if hasattr(model, 'pointer_memory_merger'):
-        tune_pmm = getattr(model_args, 'tune_pointer_memory_merger', False)
-        for n, p in model.pointer_memory_merger.named_parameters():
-            p.requires_grad = tune_pmm
+    # Feature projector - independent control
+    if hasattr(model, 'feature_projector'):
+        tune_fp = getattr(model_args, 'tune_feature_projector', False)
+        for n, p in model.feature_projector.named_parameters():
+            p.requires_grad = tune_fp
 
     # Memory feature merger - independent control
     if hasattr(model, 'memory_feature_projector'):
