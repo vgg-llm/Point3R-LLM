@@ -1,3 +1,4 @@
+# coding=utf-8
 # Copyright 2025 The Qwen Team and The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,31 +14,28 @@
 # limitations under the License.
 """PyTorch Qwen3-VL model."""
 
-from collections.abc import Callable
-from typing import Any
+from typing import Callable, Optional, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from transformers import initialization as init
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
-from transformers.configuration_utils import PreTrainedConfig
+from transformers.configuration_utils import PretrainedConfig
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.image_utils import ImageInput
 from transformers.masking_utils import create_causal_mask
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_outputs import BaseModelOutputWithPast
-from transformers.modeling_rope_utils import RopeParameters, dynamic_rope_update
-from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
-from transformers.processing_utils import ProcessingKwargs, Unpack
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update, rope_config_validation
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+from transformers.processing_utils import ProcessingKwargs, Unpack, VideosKwargs
 from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
-from transformers.utils import auto_docstring, can_return_tuple, logging
-from transformers.utils.generic import check_model_inputs, maybe_autocast
+from transformers.utils import auto_docstring, is_torchdynamo_compiling, logging
+from transformers.utils.generic import check_model_inputs
 from transformers.video_utils import VideoInput
-from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLCausalLMOutputWithPast,
     Qwen2_5_VLForConditionalGeneration,
@@ -52,7 +50,7 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import (
     VisionAttention,
     VisionRotaryEmbedding,
 )
-from transformers.models.qwen2_vl.processing_qwen2_vl import Qwen2VLProcessor
+from transformers.models.qwen2_vl.processing_qwen2_vl import Qwen2VLImagesKwargs, Qwen2VLProcessor
 from transformers.models.qwen3.modeling_qwen3 import (
     Qwen3Attention,
     Qwen3DecoderLayer,
@@ -65,7 +63,7 @@ from transformers.models.qwen3.modeling_qwen3 import (
 logger = logging.get_logger(__name__)
 
 
-class Qwen3VLVisionConfig(PreTrainedConfig):
+class Qwen3VLVisionConfig(PretrainedConfig):
     model_type = "qwen3_vl"
     base_config_key = "vision_config"
 
@@ -103,15 +101,15 @@ class Qwen3VLVisionConfig(PreTrainedConfig):
         self.deepstack_visual_indexes = deepstack_visual_indexes
 
 
-class Qwen3VLTextConfig(PreTrainedConfig):
+class Qwen3VLTextConfig(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`Qwen3VLTextModel`]. It is used to instantiate a
     Qwen3-VL model according to the specified arguments, defining the model architecture. Instantiating a configuration
     with the defaults will yield a similar configuration to that of
     Qwen3-VL-4B-Instruct [Qwen/Qwen3-VL-4B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct).
 
-    Configuration objects inherit from [`PreTrainedConfig`] and can be used to control the model outputs. Read the
-    documentation from [`PreTrainedConfig`] for more information.
+    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PretrainedConfig`] for more information.
 
     Args:
         vocab_size (`int`, *optional*, defaults to 151936):
@@ -145,11 +143,48 @@ class Qwen3VLTextConfig(PreTrainedConfig):
         use_cache (`bool`, *optional*, defaults to `True`):
             Whether or not the model should return the last key/values attentions (not used by all models). Only
             relevant if `config.is_decoder=True`.
-        rope_parameters (`RopeParameters`, *optional*):
-            Dictionary containing the configuration parameters for the RoPE embeddings. The dictionary should contain
-            a value for `rope_theta` and optionally parameters used for scaling in case you want to use RoPE
-            with longer `max_position_embeddings`.
-        attention_bias (`bool`, *optional*, defaults to `False`):
+        tie_word_embeddings (`bool`, *optional*, defaults to `False`):
+            Whether the model's input and output word embeddings should be tied.
+        rope_theta (`float`, *optional*, defaults to 5000000.0):
+            The base period of the RoPE embeddings.
+        rope_scaling (`Dict`, *optional*):
+            Dictionary containing the scaling configuration for the RoPE embeddings. NOTE: if you apply new rope type
+            and you expect the model to work on longer `max_position_embeddings`, we recommend you to update this value
+            accordingly.
+            Expected contents:
+                `rope_type` (`str`):
+                    The sub-variant of RoPE to use. Can be one of ['default', 'linear', 'dynamic', 'yarn', 'longrope',
+                    'llama3'], with 'default' being the original RoPE implementation.
+                `factor` (`float`, *optional*):
+                    Used with all rope types except 'default'. The scaling factor to apply to the RoPE embeddings. In
+                    most scaling types, a `factor` of x will enable the model to handle sequences of length x *
+                    original maximum pre-trained length.
+                `original_max_position_embeddings` (`int`, *optional*):
+                    Used with 'dynamic', 'longrope' and 'llama3'. The original max position embeddings used during
+                    pretraining.
+                `attention_factor` (`float`, *optional*):
+                    Used with 'yarn' and 'longrope'. The scaling factor to be applied on the attention
+                    computation. If unspecified, it defaults to value recommended by the implementation, using the
+                    `factor` field to infer the suggested value.
+                `beta_fast` (`float`, *optional*):
+                    Only used with 'yarn'. Parameter to set the boundary for extrapolation (only) in the linear
+                    ramp function. If unspecified, it defaults to 32.
+                `beta_slow` (`float`, *optional*):
+                    Only used with 'yarn'. Parameter to set the boundary for interpolation (only) in the linear
+                    ramp function. If unspecified, it defaults to 1.
+                `short_factor` (`list[float]`, *optional*):
+                    Only used with 'longrope'. The scaling factor to be applied to short contexts (<
+                    `original_max_position_embeddings`). Must be a list of numbers with the same length as the hidden
+                    size divided by the number of attention heads divided by 2
+                `long_factor` (`list[float]`, *optional*):
+                    Only used with 'longrope'. The scaling factor to be applied to long contexts (<
+                    `original_max_position_embeddings`). Must be a list of numbers with the same length as the hidden
+                    size divided by the number of attention heads divided by 2
+                `low_freq_factor` (`float`, *optional*):
+                    Only used with 'llama3'. Scaling factor applied to low frequency components of the RoPE
+                `high_freq_factor` (`float`, *optional*):
+                    Only used with 'llama3'. Scaling factor applied to high frequency components of the RoPE
+        attention_bias (`bool`, defaults to `False`, *optional*, defaults to `False`):
             Whether to use a bias in the query, key, value and output projection layers during self-attention.
         attention_dropout (`float`, *optional*, defaults to 0.0):
             The dropout ratio for the attention probabilities.
@@ -169,25 +204,26 @@ class Qwen3VLTextConfig(PreTrainedConfig):
 
     model_type = "qwen3_vl_text"
     base_config_key = "text_config"
-    default_theta = 500000.0
 
     def __init__(
         self,
-        vocab_size: int | None = 151936,
-        hidden_size: int | None = 4096,
-        intermediate_size: int | None = 22016,
-        num_hidden_layers: int | None = 32,
-        num_attention_heads: int | None = 32,
-        num_key_value_heads: int | None = 32,
-        head_dim: int | None = 128,
-        hidden_act: str | None = "silu",
-        max_position_embeddings: int | None = 128000,
-        initializer_range: float | None = 0.02,
-        rms_norm_eps: float | None = 1e-6,
-        use_cache: bool | None = True,
-        rope_parameters: RopeParameters | dict[str, RopeParameters] | None = None,
-        attention_bias: bool | None = False,
-        attention_dropout: float | None = 0.0,
+        vocab_size=151936,
+        hidden_size=4096,
+        intermediate_size=22016,
+        num_hidden_layers=32,
+        num_attention_heads=32,
+        num_key_value_heads=32,
+        head_dim=128,
+        hidden_act="silu",
+        max_position_embeddings=128000,
+        initializer_range=0.02,
+        rms_norm_eps=1e-6,
+        use_cache=True,
+        tie_word_embeddings=False,
+        rope_theta=5000000.0,
+        rope_scaling=None,
+        attention_bias=False,
+        attention_dropout=0.0,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -207,25 +243,25 @@ class Qwen3VLTextConfig(PreTrainedConfig):
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
+        self.rope_theta = rope_theta
+        self.rope_scaling = rope_scaling
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
-        self.rope_parameters = rope_parameters
 
-        super().__init__(
-            ignore_keys_at_rope_validation={"mrope_section", "mrope_interleaved"},
-            **kwargs,
-        )
+        rope_config_validation(self, ignore_keys={"mrope_section", "mrope_interleaved"})
+
+        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
 
-class Qwen3VLConfig(PreTrainedConfig):
+class Qwen3VLConfig(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`Qwen3VLModel`]. It is used to instantiate a
     Qwen3-VL model according to the specified arguments, defining the model architecture. Instantiating a configuration
     with the defaults will yield a similar configuration to that of
     Qwen3-VL-4B-Instruct [Qwen/Qwen3-VL-4B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct).
 
-    Configuration objects inherit from [`PreTrainedConfig`] and can be used to control the model outputs. Read the
-    documentation from [`PreTrainedConfig`] for more information.
+    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PretrainedConfig`] for more information.
 
 
     Args:
@@ -234,15 +270,15 @@ class Qwen3VLConfig(PreTrainedConfig):
         vision_config (`Union[PreTrainedConfig, dict]`,  *optional*, defaults to `Qwen3VLVisionConfig`):
             The config object or dictionary of the vision backbone.
         image_token_id (`int`, *optional*, defaults to 151655):
-            The token id used as the placeholder for image inputs.
+            The image token index to encode the image prompt.
         video_token_id (`int`, *optional*, defaults to 151656):
-            The token id used as the placeholder for video inputs.
+            The video token index to encode the image prompt.
         vision_start_token_id (`int`, *optional*, defaults to 151652):
-            The token id that marks the start of a vision segment (image or video).
+            The start token index to encode the image prompt.
         vision_end_token_id (`int`, *optional*, defaults to 151653):
-            The token id that marks the end of a vision segment (image or video).
+            The end token index to encode the image prompt.
         tie_word_embeddings (`bool`, *optional*, defaults to `False`):
-            Whether the model's input and output word embeddings should be tied.
+            Whether to tie the word embeddings.
 
     ```python
     >>> from transformers import Qwen3VLForConditionalGeneration, Qwen3VLConfig
@@ -286,8 +322,7 @@ class Qwen3VLConfig(PreTrainedConfig):
         self.video_token_id = video_token_id
         self.vision_start_token_id = vision_start_token_id
         self.vision_end_token_id = vision_end_token_id
-        self.tie_word_embeddings = tie_word_embeddings
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, tie_word_embeddings=tie_word_embeddings)
 
 
 class Qwen3VLVisionMLP(nn.Module):
@@ -350,18 +385,31 @@ class Qwen3VLVisionBlock(Qwen2_5_VLVisionBlock):
         self.mlp = Qwen3VLVisionMLP(config=config)
 
 
-class Qwen3VLTextRotaryEmbedding(LlamaRotaryEmbedding):
+class Qwen3VLTextRotaryEmbedding(nn.Module):
     inv_freq: torch.Tensor  # fix linting for `register_buffer`
 
     def __init__(self, config: Qwen3VLTextConfig, device=None):
-        super().__init__(config, device=device)
+        super().__init__()
+        if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
+            self.rope_type = config.rope_scaling.get("rope_type", "default")
+        else:
+            self.rope_type = "default"
+        self.max_seq_len_cached = config.max_position_embeddings
+        self.original_max_seq_len = config.max_position_embeddings
 
-        self.mrope_section = config.rope_parameters.get("mrope_section", [24, 20, 20])
+        self.config = config
+        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.original_inv_freq = self.inv_freq
+
+        self.mrope_section = config.rope_scaling.get("mrope_section", [24, 20, 20])
 
     def apply_interleaved_mrope(self, freqs, mrope_section):
         """Apply interleaved MRoPE to 3D rotary embeddings.
         Reorganizes frequency layout from chunked [TTT...HHH...WWW] to
-        interleaved [THWTHWTHW...TT], preserving frequency continuity.
+        interleaved [THTHWHTHW...TT], preserving frequency continuity.
         args:
             x: (3, bs, seq_len, head_dim // 2)
             mrope_section: (3,)
@@ -386,7 +434,7 @@ class Qwen3VLTextRotaryEmbedding(LlamaRotaryEmbedding):
         position_ids_expanded = position_ids[:, :, None, :].float()  # shape (3, bs, 1, positions)
 
         device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
-        with maybe_autocast(device_type=device_type, enabled=False):  # Force float32
+        with torch.autocast(device_type=device_type, enabled=False):  # Force float32
             freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(2, 3)
             freqs = self.apply_interleaved_mrope(freqs, self.mrope_section)
             emb = torch.cat((freqs, freqs), dim=-1)
@@ -405,11 +453,11 @@ class Qwen3VLTextAttention(Qwen3Attention):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: torch.Tensor | None,
-        past_key_values: Cache | None = None,
-        cache_position: torch.LongTensor | None = None,
+        attention_mask: Optional[torch.Tensor],
+        past_key_values: Optional[Cache] = None,
+        cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -454,11 +502,11 @@ class Qwen3VLTextDecoderLayer(Qwen3DecoderLayer):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        past_key_values: Cache | None = None,
-        use_cache: bool | None = False,
-        cache_position: torch.LongTensor | None = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
         return super().forward(
@@ -484,12 +532,6 @@ class Qwen3VLPreTrainedModel(Qwen2VLPreTrainedModel):
         "hidden_states": Qwen3VLTextDecoderLayer,
         "attentions": Qwen3VLTextAttention,
     }
-
-    def _init_weights(self, module):
-        PreTrainedModel._init_weights(self, module)
-        if isinstance(module, Qwen3VLVisionRotaryEmbedding):
-            inv_freq = 1.0 / (module.theta ** (torch.arange(0, module.dim, 2, dtype=torch.float) / module.dim))
-            init.copy_(module.inv_freq, inv_freq)
 
 
 class Qwen3VLVisionModel(Qwen3VLPreTrainedModel):
@@ -530,8 +572,6 @@ class Qwen3VLVisionModel(Qwen3VLPreTrainedModel):
         )
 
         self.gradient_checkpointing = False
-
-        self.post_init()
 
     def rot_pos_emb(self, grid_thw: torch.Tensor) -> torch.Tensor:
         merge_size = self.spatial_merge_size
@@ -574,7 +614,6 @@ class Qwen3VLVisionModel(Qwen3VLPreTrainedModel):
 
     def fast_pos_embed_interpolate(self, grid_thw):
         grid_ts, grid_hs, grid_ws = grid_thw[:, 0], grid_thw[:, 1], grid_thw[:, 2]
-        device = self.pos_embed.weight.device
 
         idx_list = [[] for _ in range(4)]
         weight_list = [[] for _ in range(4)]
@@ -612,9 +651,11 @@ class Qwen3VLVisionModel(Qwen3VLPreTrainedModel):
                 idx_list[i].extend(indices[i].tolist())
                 weight_list[i].extend(weights[i].tolist())
 
-        idx_tensor = torch.tensor(idx_list, dtype=torch.long, device=device)
-        weight_tensor = torch.tensor(weight_list, dtype=self.pos_embed.weight.dtype, device=device)
-        pos_embeds = self.pos_embed(idx_tensor).to(device) * weight_tensor[:, :, None]
+        idx_tensor = torch.tensor(idx_list, dtype=torch.long, device=self.pos_embed.weight.device)
+        weight_tensor = torch.tensor(
+            weight_list, dtype=self.pos_embed.weight.dtype, device=self.pos_embed.weight.device
+        )
+        pos_embeds = self.pos_embed(idx_tensor) * weight_tensor[:, :, None]
         patch_pos_embeds = pos_embeds[0] + pos_embeds[1] + pos_embeds[2] + pos_embeds[3]
 
         patch_pos_embeds = patch_pos_embeds.split([h * w for h, w in zip(grid_hs, grid_ws)])
@@ -704,8 +745,7 @@ class Qwen3VLTextModel(Qwen3VLPreTrainedModel, Qwen3Model):
     ):
         visual_pos_masks = visual_pos_masks.to(hidden_states.device)
         visual_embeds = visual_embeds.to(hidden_states.device, hidden_states.dtype)
-        hidden_states = hidden_states.clone()
-        local_this = hidden_states[visual_pos_masks, :] + visual_embeds
+        local_this = hidden_states[visual_pos_masks, :].clone() + visual_embeds
         hidden_states[visual_pos_masks, :] = local_this
         return hidden_states
 
@@ -713,18 +753,18 @@ class Qwen3VLTextModel(Qwen3VLPreTrainedModel, Qwen3Model):
     @auto_docstring
     def forward(
         self,
-        input_ids: torch.LongTensor | None = None,
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        past_key_values: Cache | None = None,
-        inputs_embeds: torch.FloatTensor | None = None,
-        use_cache: bool | None = None,
-        cache_position: torch.LongTensor | None = None,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
         # args for deepstack
-        visual_pos_masks: torch.Tensor | None = None,
-        deepstack_visual_embeds: list[torch.Tensor] | None = None,
+        visual_pos_masks: Optional[torch.Tensor] = None,
+        deepstack_visual_embeds: Optional[list[torch.Tensor]] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple | BaseModelOutputWithPast:
+    ) -> Union[tuple, BaseModelOutputWithPast]:
         r"""
         visual_pos_masks (`torch.Tensor` of shape `(batch_size, seqlen)`, *optional*):
             The mask of the visual positions.
@@ -807,7 +847,6 @@ class Qwen3VLTextModel(Qwen3VLPreTrainedModel, Qwen3Model):
 @auto_docstring
 class Qwen3VLModel(Qwen2_5_VLModel):
     config: Qwen3VLConfig
-    base_model_prefix = "model"
     _checkpoint_conversion_mapping = {}
     _no_split_modules = ["Qwen3VLTextDecoderLayer", "Qwen3VLVisionBlock"]
 
@@ -818,14 +857,14 @@ class Qwen3VLModel(Qwen2_5_VLModel):
 
     def get_rope_index(
         self,
-        input_ids: torch.LongTensor | None = None,
-        image_grid_thw: torch.LongTensor | None = None,
-        video_grid_thw: torch.LongTensor | None = None,
-        attention_mask: torch.Tensor | None = None,
+        input_ids: Optional[torch.LongTensor] = None,
+        image_grid_thw: Optional[torch.LongTensor] = None,
+        video_grid_thw: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Different from the original implementation, Qwen3VL use timestamps rather than absolute time position ids."""
 
-        # Since we use timestamps to separate videos, like <t1> <vision_start> <frame1> <vision_end> <t2> <vision_start> <frame2> <vision_end>, the video_grid_thw should also be split
+        # Since we use timestamps to seperate videos, like <t1> <vision_start> <frame1> <vision_end> <t2> <vision_start> <frame2> <vision_end>, the video_grid_thw should also be split
         if video_grid_thw is not None:
             video_grid_thw = torch.repeat_interleave(video_grid_thw, video_grid_thw[:, 0], dim=0)
             video_grid_thw[:, 0] = 1
@@ -935,7 +974,7 @@ class Qwen3VLModel(Qwen2_5_VLModel):
 
             return position_ids, mrope_position_deltas
 
-    def get_image_features(self, pixel_values: torch.FloatTensor, image_grid_thw: torch.LongTensor | None = None):
+    def get_image_features(self, pixel_values: torch.FloatTensor, image_grid_thw: Optional[torch.LongTensor] = None):
         """
         Encodes images into continuous embeddings that can be forwarded to the language model. The deepstack visual features are also returned.
 
@@ -952,7 +991,7 @@ class Qwen3VLModel(Qwen2_5_VLModel):
         return image_embeds, deepstack_image_embeds
 
     def get_video_features(
-        self, pixel_values_videos: torch.FloatTensor, video_grid_thw: torch.LongTensor | None = None
+        self, pixel_values_videos: torch.FloatTensor, video_grid_thw: Optional[torch.LongTensor] = None
     ):
         """
         Encodes videos into continuous embeddings that can be forwarded to the language model. The deepstack visual features are also returned.
@@ -971,17 +1010,17 @@ class Qwen3VLModel(Qwen2_5_VLModel):
     def forward(
         self,
         input_ids: torch.LongTensor = None,
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        past_key_values: Cache | None = None,
-        inputs_embeds: torch.FloatTensor | None = None,
-        pixel_values: torch.Tensor | None = None,
-        pixel_values_videos: torch.FloatTensor | None = None,
-        image_grid_thw: torch.LongTensor | None = None,
-        video_grid_thw: torch.LongTensor | None = None,
-        cache_position: torch.LongTensor | None = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        pixel_values: Optional[torch.Tensor] = None,
+        pixel_values_videos: Optional[torch.FloatTensor] = None,
+        image_grid_thw: Optional[torch.LongTensor] = None,
+        video_grid_thw: Optional[torch.LongTensor] = None,
+        cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple | Qwen3VLModelOutputWithPast:
+    ) -> Union[tuple, Qwen3VLModelOutputWithPast]:
         r"""
         image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
             The temporal, height and width of feature shape of each image in LLM.
@@ -1038,19 +1077,44 @@ class Qwen3VLModel(Qwen2_5_VLModel):
             deepstack_visual_embeds = deepstack_video_embeds
 
         if position_ids is None:
-            past_key_values_length = 0 if past_key_values is None else past_key_values.get_seq_length()
-            if self.rope_deltas is None or past_key_values_length == 0:
+            attention_mask_tensor = (
+                attention_mask if not isinstance(attention_mask, dict) else attention_mask["full_attention"]
+            )
+            if attention_mask_tensor is not None and attention_mask_tensor.ndim == 4:
+                attention_mask_tensor = torch.diagonal(attention_mask_tensor[:, 0], dim1=1, dim2=2)
+                # Only apply conversion for floating point tensors (inverted masks)
+                if attention_mask_tensor.dtype.is_floating_point:
+                    attention_mask_tensor = attention_mask_tensor / torch.finfo(attention_mask_tensor.dtype).min
+                    attention_mask_tensor = (1.0 - attention_mask_tensor).int()
+
+            # Calculate RoPE index once per generation in the pre-fill stage only.
+            # When compiling, we can't check tensor values thus we check only input length
+            # It is safe to assume that `length!=1` means we're in pre-fill because compiled
+            # models currently cannot do asssisted decoding
+            prefill_compiled_stage = is_torchdynamo_compiling() and (
+                (input_ids is not None and input_ids.shape[1] != 1)
+                or (inputs_embeds is not None and inputs_embeds.shape[1] != 1)
+            )
+            prefill_noncompiled_stage = not is_torchdynamo_compiling() and (
+                (cache_position is not None and cache_position[0] == 0)
+                or (past_key_values is None or past_key_values.get_seq_length() == 0)
+            )
+            if (prefill_compiled_stage or prefill_noncompiled_stage) or self.rope_deltas is None:
                 position_ids, rope_deltas = self.get_rope_index(
                     input_ids,
                     image_grid_thw,
                     video_grid_thw,
-                    attention_mask=attention_mask,
+                    attention_mask=attention_mask_tensor,
                 )
                 self.rope_deltas = rope_deltas
             # then use the prev pre-calculated rope-deltas to get the correct position ids
             else:
                 batch_size, seq_length, _ = inputs_embeds.shape
-                delta = (past_key_values_length + self.rope_deltas).to(inputs_embeds.device)
+                delta = (
+                    (cache_position[0] + self.rope_deltas).to(inputs_embeds.device)
+                    if cache_position is not None
+                    else 0
+                )
                 position_ids = torch.arange(seq_length, device=inputs_embeds.device)
                 position_ids = position_ids.view(1, -1).expand(batch_size, -1)
                 if cache_position is not None:  # otherwise `deltas` is an int `0`
@@ -1085,23 +1149,23 @@ class Qwen3VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration):
     config: Qwen3VLConfig
     _checkpoint_conversion_mapping = {}
 
-    @can_return_tuple
+    @check_model_inputs
     def forward(
         self,
         input_ids: torch.LongTensor = None,
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        past_key_values: Cache | None = None,
-        inputs_embeds: torch.FloatTensor | None = None,
-        labels: torch.LongTensor | None = None,
-        pixel_values: torch.Tensor | None = None,
-        pixel_values_videos: torch.FloatTensor | None = None,
-        image_grid_thw: torch.LongTensor | None = None,
-        video_grid_thw: torch.LongTensor | None = None,
-        cache_position: torch.LongTensor | None = None,
-        logits_to_keep: int | torch.Tensor = 0,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        pixel_values: Optional[torch.Tensor] = None,
+        pixel_values_videos: Optional[torch.FloatTensor] = None,
+        image_grid_thw: Optional[torch.LongTensor] = None,
+        video_grid_thw: Optional[torch.LongTensor] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple | Qwen3VLCausalLMOutputWithPast:
+    ) -> Union[tuple, Qwen3VLCausalLMOutputWithPast]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -1113,42 +1177,8 @@ class Qwen3VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration):
             The temporal, height and width of feature shape of each video in LLM.
 
         Example:
-
-        ```python
-        >>> from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
-
-        >>> model = Qwen3VLForConditionalGeneration.from_pretrained("Qwen/Qwen3-VL-8B-Instruct")
-        >>> processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-8B-Instruct")
-
-        >>> messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "image": "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/pipeline-cat-chonk.jpeg",
-                    },
-                    {"type": "text", "text": "Describe the image."},
-                ],
-            }
-        ]
-
-        >>> inputs = processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt"
-        )
-
-        >>> # Generate
-        >>> generated_ids = model.generate(**inputs, max_new_tokens=1024)
-        >>> generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-        >>> output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        >>> print(output_text)
-        ```
+            TODO: Add example
         """
-
         outputs = self.model(
             input_ids=input_ids,
             pixel_values=pixel_values,
@@ -1177,8 +1207,6 @@ class Qwen3VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration):
             loss=loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
             rope_deltas=outputs.rope_deltas,
         )
 
@@ -1195,7 +1223,6 @@ class Qwen3VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration):
         pixel_values_videos=None,
         image_grid_thw=None,
         video_grid_thw=None,
-        is_first_iteration=False,
         **kwargs,
     ):
         # Overwritten -- in specific circumstances we don't want to forward image inputs to the model
@@ -1212,141 +1239,30 @@ class Qwen3VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration):
             image_grid_thw=image_grid_thw,
             video_grid_thw=video_grid_thw,
             use_cache=use_cache,
-            is_first_iteration=is_first_iteration,
             **kwargs,
         )
 
-        # Qwen3VL position_ids are prepared with rope_deltas
-        if position_ids is None:
-            # Calculate RoPE index once per generation in the pre-fill stage only.
-            # When compiling, we can't check tensor values thus we check only input length
-            # It is safe to assume that `length!=1` means we're in pre-fill because compiled
-            # models currently cannot do asssisted decoding
-            if model_inputs["cache_position"][0] == 0 or self.model.rope_deltas is None:
-                vision_positions, rope_deltas = self.model.get_rope_index(
-                    model_inputs.get("input_ids", None),
-                    image_grid_thw=image_grid_thw,
-                    video_grid_thw=video_grid_thw,
-                    attention_mask=attention_mask,
-                )
-                self.model.rope_deltas = rope_deltas
-            # then use the prev pre-calculated rope-deltas to get the correct position ids
-            elif "position_ids" in model_inputs:
-                batch_size, seq_length = model_inputs["position_ids"].shape
-                device = model_inputs["position_ids"].device
-                position_ids = torch.arange(seq_length, device=device)
-                position_ids = position_ids.view(1, 1, -1).expand(3, batch_size, -1)
-                delta = cache_position[0] + self.model.rope_deltas
-                delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=0)
-                vision_positions = position_ids + delta.expand_as(position_ids)
+        # Qwen3VL position_ids are prepareed with rope_deltas in forward
+        model_inputs["position_ids"] = None
 
-            # Concatenate "text + vision" positions into [4, bs, seq-len]
-            text_positions = model_inputs["position_ids"][None, ...]
-            model_inputs["position_ids"] = torch.cat([text_positions, vision_positions], dim=0)
-
-        if not is_first_iteration and use_cache:
+        if cache_position[0] != 0:
             model_inputs["pixel_values"] = None
             model_inputs["pixel_values_videos"] = None
 
         return model_inputs
 
-    def _expand_inputs_for_generation(
-        self,
-        expand_size: int = 1,
-        is_encoder_decoder: bool = False,
-        input_ids: torch.LongTensor | None = None,
-        **model_kwargs,
-    ) -> tuple[torch.LongTensor, dict[str, Any]]:
-        # Overwritten -- Qwen3VL use timestamps and remove second_per_grid_ts
-        # Support for expanding tensors without a batch size dimension
-        # e.g., pixel_values, image_grid_thw, pixel_values_videos, video_grid_thw
-        # pixel_values.shape[0] is sum(seqlen_images for samples)
-        # image_grid_thw.shape[0] is sum(num_images for samples)
 
-        if expand_size == 1:
-            return input_ids, model_kwargs
+class Qwen3VLVideosProcessorKwargs(VideosKwargs, total=False):
+    pass
 
-        visual_keys = ["pixel_values", "image_grid_thw", "pixel_values_videos", "video_grid_thw"]
 
-        def _expand_dict_for_generation_visual(dict_to_expand):
-            image_grid_thw = model_kwargs.get("image_grid_thw", None)
-            video_grid_thw = model_kwargs.get("video_grid_thw", None)
-            image_nums, video_nums = self._get_image_nums_and_video_nums(
-                input_ids, inputs_embeds=model_kwargs.get("inputs_embeds", None)
-            )
-
-            # video_nums: (batch_size,)
-            # since video_nums is the number of videos in the input dependent on the input_ids(vision_start),
-            # but qwen3vl append vision_start to each frame of each video, so we need to recover the real video_nums according to video_grid_thw
-            if video_grid_thw is not None:
-                cumulative_frame_counts = torch.cumsum(video_grid_thw[:, 0], dim=0)
-                cumulative_token_video_counts = torch.cumsum(video_nums, dim=0)
-                # Find video boundaries in cumulative_frame_counts
-                video_boundary_indices = torch.searchsorted(cumulative_frame_counts, cumulative_token_video_counts)
-                # example: video_boundary_indices = [3, 5] means video_nums = [4, 2]
-                video_nums = torch.diff(torch.cat([-video_boundary_indices.new_ones(1), video_boundary_indices]))
-
-            def _repeat_interleave_samples(x, lengths, repeat_times):
-                samples = torch.split(x, lengths)
-                repeat_args = [repeat_times] + [1] * (x.dim() - 1)
-                result = torch.cat([sample.repeat(*repeat_args) for sample in samples], dim=0)
-                return result
-
-            for key in dict_to_expand:
-                if key == "pixel_values":
-                    # split images into samples
-                    samples = torch.split(image_grid_thw, list(image_nums))
-                    # compute the sequence length of images for each sample
-                    lengths = [torch.prod(sample, dim=1).sum() for sample in samples]
-                    dict_to_expand[key] = _repeat_interleave_samples(
-                        dict_to_expand[key], lengths=lengths, repeat_times=expand_size
-                    )
-                elif key == "image_grid_thw":
-                    # get the num of images for each sample
-                    lengths = list(image_nums)
-                    dict_to_expand[key] = _repeat_interleave_samples(
-                        dict_to_expand[key], lengths=lengths, repeat_times=expand_size
-                    )
-                elif key == "pixel_values_videos":
-                    samples = torch.split(video_grid_thw, list(video_nums))
-                    lengths = [torch.prod(sample, dim=1).sum() for sample in samples]
-                    dict_to_expand[key] = _repeat_interleave_samples(
-                        dict_to_expand[key], lengths=lengths, repeat_times=expand_size
-                    )
-                elif key == "video_grid_thw":
-                    lengths = list(video_nums)
-                    dict_to_expand[key] = _repeat_interleave_samples(
-                        dict_to_expand[key], lengths=lengths, repeat_times=expand_size
-                    )
-            return dict_to_expand
-
-        def _expand_dict_for_generation(dict_to_expand):
-            for key in dict_to_expand:
-                if (
-                    key != "cache_position"
-                    and dict_to_expand[key] is not None
-                    and isinstance(dict_to_expand[key], torch.Tensor)
-                    and key not in visual_keys
-                ):
-                    dict_to_expand[key] = dict_to_expand[key].repeat_interleave(expand_size, dim=0)
-            return dict_to_expand
-
-        model_kwargs = _expand_dict_for_generation_visual(model_kwargs)
-
-        if input_ids is not None:
-            input_ids = input_ids.repeat_interleave(expand_size, dim=0)
-
-        model_kwargs = _expand_dict_for_generation(model_kwargs)
-
-        if is_encoder_decoder:
-            if model_kwargs.get("encoder_outputs") is None:
-                raise ValueError("If `is_encoder_decoder` is True, make sure that `encoder_outputs` is defined.")
-            model_kwargs["encoder_outputs"] = _expand_dict_for_generation(model_kwargs["encoder_outputs"])
-
-        return input_ids, model_kwargs
+class Qwen3VLImagesKwargs(Qwen2VLImagesKwargs):
+    pass
 
 
 class Qwen3VLProcessorKwargs(ProcessingKwargs, total=False):
+    images_kwargs: Qwen3VLImagesKwargs
+    videos_kwargs: Qwen3VLVideosProcessorKwargs
     _defaults = {
         "text_kwargs": {
             "padding": False,
@@ -1358,6 +1274,21 @@ class Qwen3VLProcessorKwargs(ProcessingKwargs, total=False):
 
 
 class Qwen3VLProcessor(Qwen2VLProcessor):
+    r"""
+    Constructs a Qwen3VL processor which wraps a Qwen3VL image processor and a Qwen2 tokenizer into a single processor.
+    [`Qwen3VLProcessor`] offers all the functionalities of [`Qwen2VLImageProcessor`] and [`Qwen2TokenizerFast`]. See the
+    [`~Qwen3VLProcessor.__call__`] and [`~Qwen3VLProcessor.decode`] for more information.
+    Args:
+        image_processor ([`Qwen2VLImageProcessor`], *optional*):
+            The image processor is a required input.
+        tokenizer ([`Qwen2TokenizerFast`], *optional*):
+            The tokenizer is a required input.
+        video_processor ([`Qwen3VLVideoProcessor`], *optional*):
+            The video processor is a required input.
+        chat_template (`str`, *optional*): A Jinja template which will be used to convert lists of messages
+            in a chat into a tokenizable string.
+    """
+
     def __init__(self, image_processor=None, tokenizer=None, video_processor=None, chat_template=None, **kwargs):
         super().__init__(image_processor, tokenizer, video_processor, chat_template, **kwargs)
         self.vision_start_token = (
@@ -1380,11 +1311,34 @@ class Qwen3VLProcessor(Qwen2VLProcessor):
     def __call__(
         self,
         images: ImageInput = None,
-        text: TextInput | PreTokenizedInput | list[TextInput] | list[PreTokenizedInput] = None,
+        text: Union[TextInput, PreTokenizedInput, list[TextInput], list[PreTokenizedInput]] = None,
         videos: VideoInput = None,
         **kwargs: Unpack[Qwen3VLProcessorKwargs],
     ) -> BatchFeature:
-        r"""
+        """
+        Main method to prepare for the model one or several sequences(s) and image(s). This method forwards the `text`
+        and `kwargs` arguments to Qwen2TokenizerFast's [`~Qwen2TokenizerFast.__call__`] if `text` is not `None` to encode
+        the text. To prepare the vision inputs, this method forwards the `vision_infos` and `kwrags` arguments to
+        Qwen2VLImageProcessor's [`~Qwen2VLImageProcessor.__call__`] if `vision_infos` is not `None`.
+
+        Args:
+            images (`PIL.Image.Image`, `np.ndarray`, `torch.Tensor`, `list[PIL.Image.Image]`, `list[np.ndarray]`, `list[torch.Tensor]`):
+                The image or batch of images to be prepared. Each image can be a PIL image, NumPy array or PyTorch
+                tensor. Both channels-first and channels-last formats are supported.
+            text (`str`, `list[str]`, `list[list[str]]`):
+                The sequence or batch of sequences to be encoded. Each sequence can be a string or a list of strings
+                (pretokenized string). If the sequences are provided as list of strings (pretokenized), you must set
+                `is_split_into_words=True` (to lift the ambiguity with a batch of sequences).
+            videos (`np.ndarray`, `torch.Tensor`, `list[np.ndarray]`, `list[torch.Tensor]`):
+                The image or batch of videos to be prepared. Each video can be a 4D NumPy array or PyTorch
+                tensor, or a nested list of 3D frames. Both channels-first and channels-last formats are supported.
+            return_tensors (`str` or [`~utils.TensorType`], *optional*):
+                If set, will return tensors of a particular framework. Acceptable values are:
+                - `'tf'`: Return TensorFlow `tf.constant` objects.
+                - `'pt'`: Return PyTorch `torch.Tensor` objects.
+                - `'np'`: Return NumPy `np.ndarray` objects.
+                - `'jax'`: Return JAX `jnp.ndarray` objects.
+
         Returns:
             [`BatchFeature`]: A [`BatchFeature`] with the following fields:
 
@@ -1413,10 +1367,11 @@ class Qwen3VLProcessor(Qwen2VLProcessor):
             videos_inputs = self.video_processor(videos=videos, **output_kwargs["videos_kwargs"])
             video_grid_thw = videos_inputs["video_grid_thw"]
             # If user has not requested video metadata, pop it
-            if not kwargs.get("return_metadata"):
+            if "return_metadata" not in kwargs:
                 video_metadata = videos_inputs.pop("video_metadata")
             else:
                 video_metadata = videos_inputs["video_metadata"]
+            video_grid_thw = videos_inputs["video_grid_thw"]
         else:
             videos_inputs = {}
             video_grid_thw = None
@@ -1488,7 +1443,7 @@ class Qwen3VLProcessor(Qwen2VLProcessor):
 
         return BatchFeature(data={**text_inputs, **image_inputs, **videos_inputs}, tensor_type=return_tensors)
 
-    def _calculate_timestamps(self, indices: list[int] | np.ndarray, video_fps: float, merge_size: int = 2):
+    def _calculate_timestamps(self, indices: Union[list[int], np.ndarray], video_fps: float, merge_size: int = 2):
         if not isinstance(indices, list):
             indices = indices.tolist()
         if len(indices) % merge_size != 0:

@@ -22,7 +22,7 @@ from decord import VideoReader
 import transformers
 
 from . import data_list
-from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2 
+from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2, get_rope_index_qwen3vl
 from .utils import prepare_image_inputs
 
 IGNORE_INDEX = -100
@@ -147,8 +147,10 @@ class LazySupervisedDataset(Dataset):
             data_args, "video_min_total_pixels", 256 * 28 * 28
         )
         self.model_type = data_args.model_type
+        if data_args.model_type == "qwen3vl":
+            self.get_rope_index = get_rope_index_qwen3vl
         if data_args.model_type == "qwen3vl-spatial":
-            self.get_rope_index = get_rope_index_txyz
+            self.get_rope_index = get_rope_index_qwen3vl
         elif data_args.model_type == "qwen2.5vl-spatial":
             self.get_rope_index = get_rope_index_txyz
         elif data_args.model_type == "qwen2.5vl":
@@ -273,21 +275,25 @@ class LazySupervisedDataset(Dataset):
         if not os.path.exists(video_file):
             print(f"File not exist: {video_file}")
         vr = VideoReader(video_file, num_threads=4)
-        total_frames = len(vr)
-        avg_fps = vr.get_avg_fps()
-        video_length = total_frames / avg_fps
-        interval = getattr(self.data_args, "base_interval", 4)
+        try:
+            total_frames = len(vr)
+            avg_fps = vr.get_avg_fps()
+            video_length = total_frames / avg_fps
+            interval = getattr(self.data_args, "base_interval", 4)
 
-        num_frames_to_sample = round(video_length / interval)
-        video_min_frames = getattr(self.data_args, "video_min_frames", 4)
-        video_max_frames = getattr(self.data_args, "video_max_frames", 8)
+            num_frames_to_sample = round(video_length / interval)
+            video_min_frames = getattr(self.data_args, "video_min_frames", 4)
+            video_max_frames = getattr(self.data_args, "video_max_frames", 8)
 
-        target_frames = min(
-            max(num_frames_to_sample, video_min_frames), video_max_frames
-        )
-        frame_idx = np.linspace(0, total_frames - 1, target_frames, dtype=int)
-        frame_idx = np.unique(frame_idx)
-        video = vr.get_batch(frame_idx).asnumpy()
+            target_frames = min(
+                max(num_frames_to_sample, video_min_frames), video_max_frames
+            )
+            frame_idx = np.linspace(0, total_frames - 1, target_frames, dtype=int)
+            frame_idx = np.unique(frame_idx)
+            video = vr.get_batch(frame_idx).asnumpy()
+        finally:
+            del vr  # Explicitly delete VideoReader to free memory
+
         fps = len(frame_idx) / video_length
         processor = copy.deepcopy(self.data_args.image_processor)
         processor.max_pixels = self.data_args.video_max_frame_pixels
@@ -297,6 +303,7 @@ class LazySupervisedDataset(Dataset):
         video_processed = processor.preprocess(
             images=None, videos=video, return_tensors="pt"
         )
+        del video  # Free raw video array after processing
         video_tensor = video_processed["pixel_values_videos"]
         grid_thw = video_processed["video_grid_thw"][0]
         second_per_grid_ts = [
@@ -486,10 +493,14 @@ class LazySupervisedDataset(Dataset):
             data_folder = self.list_data_dict[i]["data_path"]
             full_pointer_path = os.path.join(data_folder, pointer_data_path)
 
-            # Load pointer memory from file
+            # Load pointer memory from file - only extract needed keys to save memory
             pointer_data = torch.load(full_pointer_path, weights_only=True)
             pointer_memory_embeds = pointer_data['pointer_memory_embeds']
             pointer_positions = pointer_data['pointer_positions']
+            # Load deepstack_image_embeds if available (needed for Qwen3-VL deepstack features)
+            deepstack_pointer_embeds = pointer_data.get('deepstack_image_embeds', None)
+            # Free memory immediately - don't keep memory_feat, camera_poses etc.
+            del pointer_data
 
             # The conversation contains a SINGLE <|pointer_pad|> token:
             # "<|vision_start|><|pointer_pad|><|vision_end|>\nDescribe the object..."
@@ -498,6 +509,14 @@ class LazySupervisedDataset(Dataset):
             # This is exactly what Qwen2_5_VLProcessorWithPoint3R does (lines 390-400)
 
             num_pointer_tokens = pointer_memory_embeds.shape[0]
+
+            max_pointer_tokens = 10000  # TODO: add this to data_args
+            if num_pointer_tokens > max_pointer_tokens: 
+                num_pointer_tokens = max_pointer_tokens
+                pointer_memory_embeds = pointer_memory_embeds[:max_pointer_tokens].clone()
+                pointer_positions = pointer_positions[:max_pointer_tokens].clone()
+                if deepstack_pointer_embeds is not None:
+                    deepstack_pointer_embeds = [d[:max_pointer_tokens].clone() for d in deepstack_pointer_embeds]
 
             # Process conversations with pointer token expansion
             sources_conv = copy.deepcopy([e["conversations"] for e in sources])
@@ -578,6 +597,7 @@ class LazySupervisedDataset(Dataset):
             # Store pointer memory for later use
             pointer_memory_embeds_to_store = pointer_memory_embeds
             pointer_positions_to_store = pointer_positions
+            deepstack_pointer_embeds_to_store = deepstack_pointer_embeds
         else:
             grid_thw_merged = None
             sources = copy.deepcopy([e["conversations"] for e in sources])
@@ -611,6 +631,8 @@ class LazySupervisedDataset(Dataset):
         elif "pointer_data" in self.list_data_dict[i]:
             data_dict["pointer_memory_embeds"] = pointer_memory_embeds_to_store
             data_dict["pointer_positions"] = pointer_positions_to_store
+            if deepstack_pointer_embeds_to_store is not None:
+                data_dict["deepstack_pointer_embeds"] = deepstack_pointer_embeds_to_store
 
         data_dict["tag"] = self.list_data_dict[i].get("tag", "2d")
         return data_dict
@@ -676,6 +698,7 @@ class DataCollatorForSupervisedDataset(object):
         )
         if len(images) != 0:
             concat_images = torch.cat([image for image in images], dim=0)
+            del images  # Free intermediate list after concatenation
             grid_thw = list(
                 itertools.chain(
                     *(
@@ -689,9 +712,11 @@ class DataCollatorForSupervisedDataset(object):
         else:
             concat_images = None
             grid_thw = None
+            del images  # Free empty list
 
         if len(videos) != 0:
             concat_videos = torch.cat([video for video in videos], dim=0)
+            del videos  # Free intermediate list after concatenation
             video_grid_thw = list(
                 itertools.chain(
                     *(
@@ -705,13 +730,14 @@ class DataCollatorForSupervisedDataset(object):
         else:
             concat_videos = None
             video_grid_thw = None
+            del videos  # Free empty list
 
         batch["pixel_values"] = concat_images
         batch["image_grid_thw"] = grid_thw
         batch["pixel_values_videos"] = concat_videos
         batch["video_grid_thw"] = video_grid_thw
         batch["position_ids"] = position_ids
-                
+
         # assume all data in a batch has geometry_encoder_inputs
         if "geometry_encoder_inputs" in instances[0]:
             geometry_encoder_inputs = [torch.stack(instance["geometry_encoder_inputs"]) for instance in instances]
@@ -723,16 +749,25 @@ class DataCollatorForSupervisedDataset(object):
             pointer_memory_embeds = [instance["pointer_memory_embeds"] for instance in instances]
             # Concatenate along the first dimension (number of pointer tokens)
             batch["pointer_memory_embeds"] = torch.cat(pointer_memory_embeds, dim=0)
-            assert len(set([instance["tag"] for instance in instances])) == 1, "all data in a batch should have the same tag"
-            batch["tag"] = instances[0]["tag"]
+            del pointer_memory_embeds  # Free intermediate list
 
         if "pointer_positions" in instances[0]:
             pointer_positions = [instance["pointer_positions"] for instance in instances]
             # Concatenate along the first dimension (number of pointer tokens)
             batch["pointer_positions"] = torch.cat(pointer_positions, dim=0)
+            del pointer_positions  # Free intermediate list
 
-        # TODO: add memory_feat later
-        
+        if "deepstack_pointer_embeds" in instances[0]:
+            # deepstack_pointer_embeds is a list of layer embeddings per instance
+            # Need to collect per-layer across all instances, then concatenate
+            num_layers = len(instances[0]["deepstack_pointer_embeds"])
+            deepstack_pointer_embeds = []
+            for layer_idx in range(num_layers):
+                layer_embeds = [instance["deepstack_pointer_embeds"][layer_idx] for instance in instances]
+                deepstack_pointer_embeds.append(torch.cat(layer_embeds, dim=0))
+                del layer_embeds  # Free intermediate list
+            batch["deepstack_pointer_embeds"] = deepstack_pointer_embeds
+
         return batch
 
 
@@ -782,6 +817,7 @@ class FlattenedDataCollatorForSupervisedDataset(DataCollatorForSupervisedDataset
         )
         if len(images) != 0:
             concat_images = torch.cat([image for image in images], dim=0)
+            del images  # Free intermediate list after concatenation
             grid_thw = list(
                 itertools.chain(
                     *(
@@ -795,9 +831,11 @@ class FlattenedDataCollatorForSupervisedDataset(DataCollatorForSupervisedDataset
         else:
             concat_images = None
             grid_thw = None
+            del images  # Free empty list
 
         if len(videos) != 0:
             concat_videos = torch.cat([video for video in videos], dim=0)
+            del videos  # Free intermediate list after concatenation
             video_grid_thw = list(
                 itertools.chain(
                     *(
@@ -811,19 +849,20 @@ class FlattenedDataCollatorForSupervisedDataset(DataCollatorForSupervisedDataset
         else:
             concat_videos = None
             video_grid_thw = None
+            del videos  # Free empty list
 
         batch["pixel_values"] = concat_images
         batch["image_grid_thw"] = grid_thw
         batch["pixel_values_videos"] = concat_videos
         batch["video_grid_thw"] = video_grid_thw
 
-                
         # assume all data in a batch has geometry_encoder_inputs
         if "geometry_encoder_inputs" in instances[0]:
             raise NotImplementedError("FlattenedDataCollatorForSupervisedDataset does not support geometry_encoder_inputs")
 
         if "pointer_memory_embeds" in instances[0] or "pointer_positions" in instances[0]:
             raise NotImplementedError("FlattenedDataCollatorForSupervisedDataset does not support pointer_memory_embeds")
+
         return batch
 
 

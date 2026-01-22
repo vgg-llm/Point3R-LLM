@@ -2,11 +2,8 @@ import torch
 import torch.nn as nn
 from typing import Optional, Any, Tuple, List, Dict, Union
 
-from .modular_qwen3_vl import (
-    Qwen3VLForConditionalGeneration,
-    Qwen3VLCausalLMOutputWithPast,
-    Qwen3VLConfig,
-)
+from .modeling_qwen3_vl import Qwen3VLForConditionalGeneration, Qwen3VLCausalLMOutputWithPast
+from .configuration_qwen3_vl import Qwen3VLConfig
 from ..point3r.point3r import Point3R, Point3RConfig
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
@@ -81,159 +78,15 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         pointer_positions: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Calculate RoPE indices for text, vision, and pointer tokens.
-
-        For pointer tokens, we use 4D position encoding:
-        - dim 0: temporal (shared across consecutive pointers)
-        - dim 1: height from pointer_positions
-        - dim 2: width from pointer_positions
-        - dim 3: depth from pointer_positions
-
-        Args:
-            input_ids: Input token IDs
-            image_grid_thw: Image grid dimensions (temporal, height, width)
-            video_grid_thw: Video grid dimensions
-            attention_mask: Attention mask
-            pointer_memory_embeds: Point3R memory embeddings
-            pointer_positions: 3D positions for each pointer token (height, width, depth)
-
-        Returns:
-            position_ids: Position IDs for RoPE (3D or 4D depending on content)
-            mrope_position_deltas: Position deltas for generation
+        Calculate RoPE indices - delegate to parent for all cases.
+        Pointer tokens use sequential positions like text tokens (no special 3D/4D PE).
         """
-        # If we have image/video, use the parent implementation (3D RoPE)
-        if input_ids is not None and (image_grid_thw is not None or video_grid_thw is not None):
-            return super().get_rope_index(
-                input_ids=input_ids,
-                image_grid_thw=image_grid_thw,
-                video_grid_thw=video_grid_thw,
-                attention_mask=attention_mask,
-            )
-
-        # Handle pointer-only case (no image/video, but has pointer tokens)
-        if input_ids is not None and pointer_memory_embeds is not None:
-            pointer_token_id = self.pointer_token_id
-            total_input_ids = input_ids
-
-            if attention_mask is None:
-                attention_mask = torch.ones_like(total_input_ids)
-
-            # Use 4D position IDs for pointer tokens: (temporal, height, width, depth)
-            position_ids = torch.ones(
-                4,
-                input_ids.shape[0],
-                input_ids.shape[1],
-                dtype=input_ids.dtype,
-                device=input_ids.device,
-            )
-            attention_mask = attention_mask.to(total_input_ids.device)
-            mrope_position_deltas = []
-
-            for i, input_ids_single in enumerate(total_input_ids):
-                input_ids_masked = input_ids_single[attention_mask[i] == 1]
-                input_tokens = input_ids_masked.tolist()
-
-                llm_pos_ids_list: list = []
-                pointer_idx = 0
-                current_pos = 0  # Track position counter
-
-                i_token = 0
-                while i_token < len(input_tokens):
-                    if pointer_token_id is not None and input_tokens[i_token] == pointer_token_id:
-                        # Find consecutive pointer tokens
-                        pointer_start = i_token
-                        pointer_end = i_token
-                        while pointer_end < len(input_tokens) and input_tokens[pointer_end] == pointer_token_id:
-                            pointer_end += 1
-
-                        num_consecutive_pointers = pointer_end - pointer_start
-
-                        # All consecutive pointer tokens share the same temporal position
-                        shared_temporal_pos = current_pos
-
-                        # Build position IDs for all pointer tokens
-                        pointer_t_ids = []
-                        pointer_h_ids = []
-                        pointer_w_ids = []
-                        pointer_d_ids = []
-
-                        for j in range(num_consecutive_pointers):
-                            pointer_t_ids.append(shared_temporal_pos)
-
-                            if pointer_positions is not None and pointer_idx < pointer_positions.shape[0]:
-                                h_pos = pointer_positions[pointer_idx][0].item()
-                                w_pos = pointer_positions[pointer_idx][1].item()
-                                d_pos = pointer_positions[pointer_idx][2].item()
-                            else:
-                                # Fallback: use sequential positions
-                                h_pos = current_pos + j
-                                w_pos = current_pos + j
-                                d_pos = current_pos + j
-
-                            pointer_h_ids.append(h_pos)
-                            pointer_w_ids.append(w_pos)
-                            pointer_d_ids.append(d_pos)
-                            pointer_idx += 1
-
-                        # Stack as [temporal, height, width, depth]
-                        pointer_pos_ids = torch.tensor(
-                            [pointer_t_ids, pointer_h_ids, pointer_w_ids, pointer_d_ids],
-                            dtype=input_ids_masked.dtype,
-                            device=input_ids_masked.device
-                        )
-                        llm_pos_ids_list.append(pointer_pos_ids)
-
-                        # Increment position by number of pointers
-                        current_pos += num_consecutive_pointers
-                        i_token = pointer_end
-                    else:
-                        # Regular text token - find consecutive text tokens
-                        text_start = i_token
-                        text_end = i_token
-                        while text_end < len(input_tokens) and (
-                            pointer_token_id is None or input_tokens[text_end] != pointer_token_id
-                        ):
-                            text_end += 1
-
-                        text_len = text_end - text_start
-                        # Text tokens get sequential positions in all dimensions
-                        text_pos_ids = torch.arange(text_len, dtype=input_ids_masked.dtype, device=input_ids_masked.device)
-                        text_pos_ids = text_pos_ids.view(1, -1).expand(4, -1) + current_pos
-                        llm_pos_ids_list.append(text_pos_ids)
-
-                        current_pos += text_len
-                        i_token = text_end
-
-                if len(llm_pos_ids_list) > 0:
-                    llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(4, -1)
-                    position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
-                    mrope_position_deltas.append(llm_positions[0].max() + 1 - len(total_input_ids[i]))
-                else:
-                    mrope_position_deltas.append(0)  # Use int instead of tensor to avoid device mismatch
-
-            mrope_position_deltas = torch.tensor(mrope_position_deltas, device=input_ids.device).unsqueeze(1)
-            return position_ids, mrope_position_deltas
-
-        # Fallback: pure text case (no vision, no pointers)
-        if attention_mask is not None:
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
-            position_ids = position_ids.unsqueeze(0).expand(3, -1, -1).to(attention_mask.device)
-            max_position_ids = position_ids.max(0, keepdim=False)[0].max(-1, keepdim=True)[0]
-            mrope_position_deltas = max_position_ids + 1 - attention_mask.shape[-1]
-        else:
-            position_ids = (
-                torch.arange(input_ids.shape[1], device=input_ids.device)
-                .view(1, 1, -1)
-                .expand(3, input_ids.shape[0], -1)
-            )
-            mrope_position_deltas = torch.zeros(
-                [input_ids.shape[0], 1],
-                device=input_ids.device,
-                dtype=input_ids.dtype,
-            )
-
-        return position_ids, mrope_position_deltas
+        return self.model.get_rope_index(
+            input_ids=input_ids,
+            image_grid_thw=image_grid_thw,
+            video_grid_thw=video_grid_thw,
+            attention_mask=attention_mask,
+        )
 
     def forward(
         self,
@@ -251,6 +104,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         logits_to_keep: int | torch.Tensor = 0,
         pointer_memory_embeds: Optional[torch.Tensor] = None,
         pointer_positions: Optional[torch.Tensor] = None,
+        deepstack_pointer_embeds: Optional[List[torch.Tensor]] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> Tuple | Qwen3VLCausalLMOutputWithPast:
         """
@@ -259,13 +113,37 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         Args:
             pointer_memory_embeds: Point3R memory embeddings (num_pointers, hidden_size)
             pointer_positions: 3D positions for each pointer (num_pointers, 3) as [h, w, d]
+            deepstack_pointer_embeds: List of intermediate layer embeddings for pointers
             ... (other args same as parent)
         """
         # Get input embeddings
         if inputs_embeds is None:
             inputs_embeds = self.model.get_input_embeddings()(input_ids)
 
-        # Inject pointer memory embeddings
+        # Handle image embeddings (same as parent but we need to do it here since we modified inputs_embeds)
+        image_mask = None
+        video_mask = None
+        pointer_mask = None
+        deepstack_image_embeds = None
+        deepstack_video_embeds = None
+        # deepstack_pointer_embeds is now a parameter
+
+        if pixel_values is not None:
+            image_embeds, deepstack_image_embeds = self.model.get_image_features(pixel_values, image_grid_thw)
+            image_embeds = torch.cat(image_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
+            image_mask, _ = self.model.get_placeholder_mask(
+                input_ids, inputs_embeds=inputs_embeds, image_features=image_embeds
+            )
+            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+
+        if pixel_values_videos is not None:
+            video_embeds, deepstack_video_embeds = self.model.get_video_features(pixel_values_videos, video_grid_thw)
+            video_embeds = torch.cat(video_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
+            _, video_mask = self.model.get_placeholder_mask(
+                input_ids, inputs_embeds=inputs_embeds, video_features=video_embeds
+            )
+            inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
+
         if pointer_memory_embeds is not None:
             pointer_memory_embeds = pointer_memory_embeds.type(self.model.visual.dtype)
             n_pointer_tokens = (input_ids == self.pointer_token_id).sum().item()
@@ -285,51 +163,49 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             pointer_memory_embeds = pointer_memory_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(pointer_mask, pointer_memory_embeds)
 
-        # Handle image embeddings (same as parent but we need to do it here since we modified inputs_embeds)
-        image_mask = None
-        video_mask = None
-        deepstack_image_embeds = None
-        deepstack_video_embeds = None
-
-        if pixel_values is not None:
-            image_embeds, deepstack_image_embeds = self.model.get_image_features(pixel_values, image_grid_thw)
-            image_embeds = torch.cat(image_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
-            image_mask, _ = self.model.get_placeholder_mask(
-                input_ids, inputs_embeds=inputs_embeds, image_features=image_embeds
-            )
-            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
-
-        if pixel_values_videos is not None:
-            video_embeds, deepstack_video_embeds = self.model.get_video_features(pixel_values_videos, video_grid_thw)
-            video_embeds = torch.cat(video_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
-            _, video_mask = self.model.get_placeholder_mask(
-                input_ids, inputs_embeds=inputs_embeds, video_features=video_embeds
-            )
-            inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
-
         # Aggregate visual position masks and deepstack embeddings
         visual_pos_masks = None
         deepstack_visual_embeds = None
-        if image_mask is not None and video_mask is not None:
+
+        # Reduce masks to 2D (batch, seq_len)
+        if image_mask is not None:
             image_mask = image_mask[..., 0]
+        if video_mask is not None:
             video_mask = video_mask[..., 0]
-            visual_pos_masks = image_mask | video_mask
+        if pointer_mask is not None:
+            pointer_mask = pointer_mask[..., 0]
+
+        # Combine all visual masks
+        mask_list = [m for m in [image_mask, video_mask, pointer_mask] if m is not None]
+        if mask_list:
+            visual_pos_masks = mask_list[0]
+            for m in mask_list[1:]:
+                visual_pos_masks = visual_pos_masks | m
+
+        # Aggregate deepstack embeddings from all sources
+        deepstack_sources = [
+            (image_mask, deepstack_image_embeds),
+            (video_mask, deepstack_video_embeds),
+            (pointer_mask, deepstack_pointer_embeds),
+        ]
+        active_sources = [(mask, embeds) for mask, embeds in deepstack_sources if mask is not None and embeds is not None]
+
+        if visual_pos_masks is not None and active_sources:
+            # Get number of layers from first available source
+            num_layers = len(active_sources[0][1])
+            hidden_dim = active_sources[0][1][0].shape[-1]
+            device = active_sources[0][1][0].device
+            dtype = active_sources[0][1][0].dtype
+
             deepstack_visual_embeds = []
-            image_mask_joint = image_mask[visual_pos_masks]
-            video_mask_joint = video_mask[visual_pos_masks]
-            for img_embed, vid_embed in zip(deepstack_image_embeds, deepstack_video_embeds):
-                embed_joint = img_embed.new_zeros(visual_pos_masks.sum(), img_embed.shape[-1]).to(img_embed.device)
-                embed_joint[image_mask_joint, :] = img_embed
-                embed_joint[video_mask_joint, :] = vid_embed
+            for layer_idx in range(num_layers):
+                embed_joint = torch.zeros(visual_pos_masks.sum(), hidden_dim, device=device, dtype=dtype)
+
+                for mask, embeds in active_sources:
+                    mask_joint = mask[visual_pos_masks]
+                    embed_joint[mask_joint] = embeds[layer_idx].to(device, dtype)
+
                 deepstack_visual_embeds.append(embed_joint)
-        elif image_mask is not None:
-            image_mask = image_mask[..., 0]
-            visual_pos_masks = image_mask
-            deepstack_visual_embeds = deepstack_image_embeds
-        elif video_mask is not None:
-            video_mask = video_mask[..., 0]
-            visual_pos_masks = video_mask
-            deepstack_visual_embeds = deepstack_video_embeds
 
         # Calculate position IDs if not provided
         if position_ids is None:
@@ -352,11 +228,8 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
                 if cache_position is not None:
                     delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=0)
                 position_ids = position_ids.add(delta)
-                # Expand to match expected dimensions (3 or 4 depending on pointer presence)
-                if pointer_memory_embeds is not None:
-                    position_ids = position_ids.unsqueeze(0).expand(4, -1, -1)
-                else:
-                    position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+                # Expand to match expected dimensions (always 3D for MRoPE)
+                position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
 
         # Forward through language model
         outputs = self.model.language_model(
@@ -406,7 +279,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         video_grid_thw=None,
         pointer_memory_embeds=None,
         pointer_positions=None,
-        is_first_iteration=False,
+        deepstack_pointer_embeds=None,
         **kwargs,
     ):
         """Prepare inputs for generation with pointer memory support."""
@@ -421,20 +294,27 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             pixel_values_videos=pixel_values_videos,
             image_grid_thw=image_grid_thw,
             video_grid_thw=video_grid_thw,
+            pointer_memory_embeds=pointer_memory_embeds,
+            pointer_positions=pointer_positions,
+            deepstack_pointer_embeds=deepstack_pointer_embeds,
             use_cache=use_cache,
-            is_first_iteration=is_first_iteration,
             **kwargs,
         )
 
-        # Add pointer inputs
-        model_inputs["pointer_memory_embeds"] = pointer_memory_embeds
-        model_inputs["pointer_positions"] = pointer_positions
+        model_inputs["position_ids"] = None
 
-        # Clear pointer inputs after prefill (they're stored in KV cache)
-        if not is_first_iteration and use_cache:
+        assert "pointer_memory_embeds" in model_inputs.keys(), "No pointer_memory_embeds"
+        assert "pointer_positions" in model_inputs.keys(), "No pointer_positions"
+        assert "deepstack_pointer_embeds" in model_inputs.keys(), "No deepstack_pointer_embeds"
+
+        if cache_position[0] != 0:
+            # After the prefill phase, vision and pointer inputs should not be forwarded
+            # as they have already been processed and are stored in the KV cache
+            model_inputs["pixel_values"] = None
+            model_inputs["pixel_values_videos"] = None
             model_inputs["pointer_memory_embeds"] = None
             model_inputs["pointer_positions"] = None
-
+            model_inputs["deepstack_pointer_embeds"] = None
         return model_inputs
 
     def _get_pointer_nums(
@@ -474,7 +354,8 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         # Add pointer keys to visual keys
         visual_keys = [
             "pixel_values", "image_grid_thw", "pixel_values_videos",
-            "video_grid_thw", "pointer_memory_embeds", "pointer_positions"
+            "video_grid_thw", "pointer_memory_embeds", "pointer_positions",
+            "deepstack_pointer_embeds"
         ]
 
         def _expand_dict_for_generation_visual(dict_to_expand):
@@ -530,6 +411,13 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
                     dict_to_expand[key] = _repeat_interleave_samples(
                         dict_to_expand[key], lengths=lengths, repeat_times=expand_size
                     )
+                elif key == "deepstack_pointer_embeds" and dict_to_expand[key] is not None:
+                    # deepstack_pointer_embeds is a list of tensors, expand each layer
+                    lengths = list(pointer_nums)
+                    dict_to_expand[key] = [
+                        _repeat_interleave_samples(layer_embeds, lengths=lengths, repeat_times=expand_size)
+                        for layer_embeds in dict_to_expand[key]
+                    ]
 
             return dict_to_expand
 
@@ -559,3 +447,5 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             model_kwargs["encoder_outputs"] = _expand_dict_for_generation(model_kwargs["encoder_outputs"])
 
         return input_ids, model_kwargs
+
+__all__ = ["Qwen3VLForConditionalGenerationWithPoint3R"]

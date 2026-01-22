@@ -1087,18 +1087,28 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
             special_image_mask = input_ids == self.config.image_token_id
             special_video_mask = input_ids == self.config.video_token_id
 
-        n_image_tokens = special_image_mask.sum()
+        n_image_tokens = special_image_mask.sum().item()
         special_image_mask = special_image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
-        if image_features is not None and inputs_embeds[special_image_mask].numel() != image_features.numel():
-            raise ValueError(
-                f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {image_features.shape[0]}"
+        if image_features is not None:
+            mask_numel = inputs_embeds[special_image_mask].numel()
+            feat_numel = image_features.numel()
+            assert mask_numel == feat_numel, (
+                f"[get_placeholder_mask] Image features and image tokens do not match: "
+                f"mask_numel={mask_numel}, feat_numel={feat_numel}, "
+                f"n_image_tokens={n_image_tokens}, image_features.shape={image_features.shape}, "
+                f"inputs_embeds.shape={inputs_embeds.shape}, special_image_mask.shape={special_image_mask.shape}"
             )
 
-        n_video_tokens = special_video_mask.sum()
+        n_video_tokens = special_video_mask.sum().item()
         special_video_mask = special_video_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
-        if video_features is not None and inputs_embeds[special_video_mask].numel() != video_features.numel():
-            raise ValueError(
-                f"Videos features and video tokens do not match: tokens: {n_video_tokens}, features {video_features.shape[0]}"
+        if video_features is not None:
+            mask_numel = inputs_embeds[special_video_mask].numel()
+            feat_numel = video_features.numel()
+            assert mask_numel == feat_numel, (
+                f"[get_placeholder_mask] Video features and video tokens do not match: "
+                f"mask_numel={mask_numel}, feat_numel={feat_numel}, "
+                f"n_video_tokens={n_video_tokens}, video_features.shape={video_features.shape}, "
+                f"inputs_embeds.shape={inputs_embeds.shape}, special_video_mask.shape={special_video_mask.shape}"
             )
 
         return special_image_mask, special_video_mask

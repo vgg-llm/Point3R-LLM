@@ -40,9 +40,20 @@ from qwen_vl.train.argument import (
     DataArguments,
     TrainingArguments,
 )
-from transformers import AutoTokenizer, AutoProcessor, Qwen2VLImageProcessor, Trainer, AutoConfig, set_seed, enable_full_determinism
+from transformers import AutoTokenizer, AutoProcessor, Qwen2VLImageProcessor, Trainer, AutoConfig, set_seed, enable_full_determinism, TrainerCallback
+import gc
 
 local_rank = None
+
+
+class ClearCacheCallback(TrainerCallback):
+    """Callback to clear CUDA cache after each training step to avoid memory fragmentation."""
+
+    def on_step_end(self, args, state, control, **kwargs):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
 
 def rank0_print(*args):
     if local_rank == 0:
@@ -141,6 +152,26 @@ def train(attn_implementation="flash_attention_2"):
             ]:
                 setattr(config, k, getattr(model_args, k))
 
+            # Add missing vision config attributes for Qwen2.5VL compatibility
+            if hasattr(config, "vision_config"):
+                if not hasattr(config.vision_config, "fullatt_block_indexes"):
+                    depth = getattr(config.vision_config, "depth", 27)
+                    config.vision_config.fullatt_block_indexes = list(range(depth))
+                if not hasattr(config.vision_config, "window_size"):
+                    config.vision_config.window_size = 112
+
+            # Add missing text config attributes for Qwen2.5VL compatibility
+            if hasattr(config, "text_config"):
+                num_hidden_layers = getattr(config.text_config, "num_hidden_layers", 32)
+                if not hasattr(config.text_config, "use_sliding_window"):
+                    config.text_config.use_sliding_window = False
+                if not hasattr(config.text_config, "sliding_window"):
+                    config.text_config.sliding_window = None
+                if not hasattr(config.text_config, "max_window_layers"):
+                    config.text_config.max_window_layers = num_hidden_layers
+                if not hasattr(config.text_config, "layer_types"):
+                    config.text_config.layer_types = ["full_attention"] * num_hidden_layers
+
             assert model_args.use_preprocessed_input or model_args.point3r_model_path is not None, \
                 "When use_pointer_memory is True, use_preprocessed_input must be True or point3r_model_path must be set in the config."
             model = Qwen3VLForConditionalGenerationWithPoint3R.from_pretrained(
@@ -149,7 +180,8 @@ def train(attn_implementation="flash_attention_2"):
                 cache_dir=training_args.cache_dir,
                 attn_implementation=attn_implementation,
                 torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
-                point3r_model_path=model_args.point3r_model_path
+                # Don't load Point3R model when using preprocessed inputs
+                point3r_model_path=None if model_args.use_preprocessed_input else model_args.point3r_model_path
             )
 
             base_processor = AutoProcessor.from_pretrained(
@@ -178,7 +210,7 @@ def train(attn_implementation="flash_attention_2"):
             data_args.image_processor = processor.image_processor
             data_args.model_type = "qwen3vl-spatial"  # Use 4D RoPE for pointer memory
         else:
-            from qwen_vl.model.qwen3_vl.modular_qwen3_vl import Qwen3VLForConditionalGeneration
+            from transformers import Qwen3VLForConditionalGeneration
             model = Qwen3VLForConditionalGeneration.from_pretrained(
                 model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
@@ -354,7 +386,9 @@ def train(attn_implementation="flash_attention_2"):
     processor_to_pass = processor if model_args.use_pointer_memory else None
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args, processor=processor_to_pass)
     trainer = Trainer(
-        model=model, processing_class=tokenizer, args=training_args, **data_module
+        model=model, processing_class=tokenizer, args=training_args,
+        callbacks=[ClearCacheCallback()],
+        **data_module
     )
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):

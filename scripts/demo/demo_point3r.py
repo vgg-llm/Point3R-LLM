@@ -13,8 +13,6 @@ import os
 from pathlib import Path
 sys.path.insert(0, 'src')
 
-from qwen_vl.model.modeling_qwen_point3r import Qwen2_5_VLForConditionalGenerationWithPoint3R
-from qwen_vl.model.processing_qwen2_5_vl import Qwen2_5_VLProcessorWithPoint3R
 from transformers import AutoProcessor
 from qwen_vl.model.point3r.point3r import Point3R
 from qwen_vl.model.point3r.extract_memory import extract_pointer_memory
@@ -29,30 +27,65 @@ def main():
     print("="*70)
     stage0_start = time()
 
+    model_path = "Qwen/Qwen3-VL-4B-Instruct"
     # Load model with memory-efficient settings
     print("Loading model...")
-    model = Qwen2_5_VLForConditionalGenerationWithPoint3R.from_pretrained(
-        "Qwen/Qwen2.5-VL-3B-Instruct",
-        cache_dir="./cache",
-        torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
-        device_map="auto",  # Automatically distribute model across available devices
-        low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
-    )
+    if 'Qwen3-VL' in model_path:
+        from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
+        from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
+        # Load model with memory-efficient settings
+        print(f"Loading model from: {model_path}")
+        model = Qwen3VLForConditionalGenerationWithPoint3R.from_pretrained(
+            model_path,
+            cache_dir="./cache",
+            torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
+            device_map="auto" if device is None else device,  # Automatically distribute model across available devices
+            low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
+        )
 
-    # Load the base processor first
-    print("Loading processor...")
-    min_pixels = 256 * 28 * 28
-    max_pixels = 1280 * 28 * 28
-    base_processor = AutoProcessor.from_pretrained(
-        "Qwen/Qwen2.5-VL-3B-Instruct", use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
-    )
+        # Load the base processor first
+        print("Loading processor...")
+        min_pixels = 256 * 28 * 28
+        max_pixels = 1280 * 28 * 28
+        base_processor = AutoProcessor.from_pretrained(
+            model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
+        )
 
-    # Create Point3R processor with pointer token support
-    processor = Qwen2_5_VLProcessorWithPoint3R(
-        image_processor=base_processor.image_processor,
-        tokenizer=base_processor.tokenizer,
-        chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
-    )
+        # Create Point3R processor with pointer token support
+        processor = Qwen3VLProcessorWithPoint3R(
+            image_processor=base_processor.image_processor,
+            tokenizer=base_processor.tokenizer,
+            video_processor=base_processor.video_processor,
+            chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+        )
+    else:
+        from qwen_vl.model.modeling_qwen_point3r import Qwen2_5_VLForConditionalGenerationWithPoint3R
+        from qwen_vl.model.processing_qwen2_5_vl import Qwen2_5_VLProcessorWithPoint3R
+
+        # Load model with memory-efficient settings
+        print(f"Loading model from: {model_path}")
+        model = Qwen2_5_VLForConditionalGenerationWithPoint3R.from_pretrained(
+            model_path,
+            cache_dir="./cache",
+            torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
+            device_map="auto" if device is None else device,  # Automatically distribute model across available devices
+            low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
+        )
+
+        # Load the base processor first
+        print("Loading processor...")
+        min_pixels = 256 * 28 * 28
+        max_pixels = 1280 * 28 * 28
+        base_processor = AutoProcessor.from_pretrained(
+            model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
+        )
+
+        # Create Point3R processor with pointer token support
+        processor = Qwen2_5_VLProcessorWithPoint3R(
+            image_processor=base_processor.image_processor,
+            tokenizer=base_processor.tokenizer,
+            chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+        )
 
     ##################### This part should be inside Qwen2_5_VLForConditionalGenerationWithPoint3R 
 
@@ -276,30 +309,62 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
     print("="*70)
     stage0_start = time()
 
-    # Load model with memory-efficient settings
-    print(f"Loading model from: {model_path}")
-    model = Qwen2_5_VLForConditionalGenerationWithPoint3R.from_pretrained(
-        model_path,
-        cache_dir="./cache",
-        torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
-        device_map="auto" if device is None else device,  # Automatically distribute model across available devices
-        low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
-    )
+    if 'Qwen3-VL' in model_path:
+        from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
+        from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
+        # Load model with memory-efficient settings
+        print(f"Loading model from: {model_path}")
+        model = Qwen3VLForConditionalGenerationWithPoint3R.from_pretrained(
+            model_path,
+            cache_dir="./cache",
+            torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
+            device_map="auto" if device is None else device,  # Automatically distribute model across available devices
+            low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
+        )
 
-    # Load the base processor first
-    print("Loading processor...")
-    min_pixels = 256 * 28 * 28
-    max_pixels = 1280 * 28 * 28
-    base_processor = AutoProcessor.from_pretrained(
-        model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
-    )
+        # Load the base processor first
+        print("Loading processor...")
+        min_pixels = 256 * 28 * 28
+        max_pixels = 1280 * 28 * 28
+        base_processor = AutoProcessor.from_pretrained(
+            model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
+        )
 
-    # Create Point3R processor with pointer token support
-    processor = Qwen2_5_VLProcessorWithPoint3R(
-        image_processor=base_processor.image_processor,
-        tokenizer=base_processor.tokenizer,
-        chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
-    )
+        # Create Point3R processor with pointer token support
+        processor = Qwen3VLProcessorWithPoint3R(
+            image_processor=base_processor.image_processor,
+            tokenizer=base_processor.tokenizer,
+            video_processor=base_processor.video_processor,
+            chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+        )
+    else:
+        from qwen_vl.model.modeling_qwen_point3r import Qwen2_5_VLForConditionalGenerationWithPoint3R
+        from qwen_vl.model.processing_qwen2_5_vl import Qwen2_5_VLProcessorWithPoint3R
+
+        # Load model with memory-efficient settings
+        print(f"Loading model from: {model_path}")
+        model = Qwen2_5_VLForConditionalGenerationWithPoint3R.from_pretrained(
+            model_path,
+            cache_dir="./cache",
+            torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
+            device_map="auto" if device is None else device,  # Automatically distribute model across available devices
+            low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
+        )
+
+        # Load the base processor first
+        print("Loading processor...")
+        min_pixels = 256 * 28 * 28
+        max_pixels = 1280 * 28 * 28
+        base_processor = AutoProcessor.from_pretrained(
+            model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
+        )
+
+        # Create Point3R processor with pointer token support
+        processor = Qwen2_5_VLProcessorWithPoint3R(
+            image_processor=base_processor.image_processor,
+            tokenizer=base_processor.tokenizer,
+            chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+        )
 
     ##################### This part should be inside Qwen2_5_VLForConditionalGenerationWithPoint3R 
 
@@ -336,11 +401,11 @@ def preprocess_images(
         max_pixels,
         point3r_model,
         input_images_dir = "./data/demo_data/demo_photos/",
-        input_poses_dir = None,
         pointer_data_path = None,
         use_viser = False,
         unload_point3r_model = False,
         annotation_result = None,
+        input_poses_dir = None,
         scannet_pth_path = None,
     ):
 
@@ -371,9 +436,9 @@ def preprocess_images(
         else:
             print(f"Warning: No .txt pose files found in {input_poses_dir}")
             pose_paths = None
-    if len(pose_paths) > sample_ct:
-        step = len(pose_paths) / sample_ct
-        pose_paths = [pose_paths[int(i * step)] for i in range(sample_ct)]
+        if len(pose_paths) > sample_ct:
+            step = len(pose_paths) / sample_ct
+            pose_paths = [pose_paths[int(i * step)] for i in range(sample_ct)]
 
     vision_message = [
         {
@@ -390,6 +455,7 @@ def preprocess_images(
     # Process images in batches
     batch_size = 2  # Adjust based on available GPU memory
     image_embeds_list = []
+    deepstack_image_embeds = []  # List of lists: [[layer0_batch0, layer0_batch1, ...], [layer1_batch0, ...], ...]
     grid_thw_list = []
 
     for i in range(0, len(image_inputs), batch_size):
@@ -410,15 +476,34 @@ def preprocess_images(
             # print(f'Batch {i//batch_size + 1}: pixel_values shape = {pixel_values.shape}')
             # print(f'Batch {i//batch_size + 1}: grid_thw = {grid_thw}')
 
-            batch_embeds = model.visual(pixel_values, grid_thw=grid_thw)
+            visual_output = model.visual(pixel_values, grid_thw=grid_thw)
+            batch_deepstack_image_embeds = None
+            if isinstance(visual_output, tuple):
+                batch_image_embeds, batch_deepstack_image_embeds = visual_output
+            else:
+                batch_image_embeds = visual_output
+
             # print(f'Batch {i//batch_size + 1}: image_embeds shape = {batch_embeds.shape}')
 
-            image_embeds_list.append(batch_embeds)
+            image_embeds_list.append(batch_image_embeds)
+            if batch_deepstack_image_embeds is not None:
+                # Initialize list structure on first batch
+                if len(deepstack_image_embeds) == 0:
+                    deepstack_image_embeds = [[] for _ in range(len(batch_deepstack_image_embeds))]
+                # Append each layer's embeddings to corresponding list
+                for layer_idx, layer_embeds in enumerate(batch_deepstack_image_embeds):
+                    deepstack_image_embeds[layer_idx].append(layer_embeds)
             grid_thw_list.append(grid_thw)
 
     # Concatenate all batches to build equivalent image_embeds
     image_embeds = torch.cat(image_embeds_list, dim=0)
     grid_thw = torch.cat(grid_thw_list, dim=0)
+
+    # Concatenate deepstack embeddings for each layer
+    if deepstack_image_embeds:
+        deepstack_image_embeds = [
+            torch.cat(layer_embeds_list, dim=0) for layer_embeds_list in deepstack_image_embeds
+        ]
 
     # print(f'Final concatenated image_embeds shape = {image_embeds.shape}')
     # print(f'Final concatenated grid_thw = {grid_thw}')
@@ -435,12 +520,17 @@ def preprocess_images(
     image_embeds = image_embeds.to(point3r_device)
     grid_thw = grid_thw.to(point3r_device)
 
+    # Move deepstack embeddings to Point3R device if available
+    if deepstack_image_embeds:
+        deepstack_image_embeds = [layer.to(point3r_device) for layer in deepstack_image_embeds]
+
     # Extract pointer memory from the same image, passing image_embeds and grid_thw
     pointer_data = extract_pointer_memory(
         image_inputs=image_inputs,
         point3r_model=point3r_model,
         image_embeds=image_embeds,
         grid_thw=grid_thw,
+        deepstack_image_embeds=deepstack_image_embeds if deepstack_image_embeds else None,
         device=point3r_device,
         no_crop=False,
         size=512,
@@ -519,6 +609,11 @@ def run_models(model,
     pointer_memory_embeds = pointer_data['pointer_memory_embeds'].to(model.device)
     pointer_positions = pointer_data['pointer_positions'].to(model.device)
 
+    # Load deepstack embeddings if available
+    deepstack_pointer_embeds = None
+    if 'deepstack_image_embeds' in pointer_data:
+        deepstack_pointer_embeds = [layer.to(model.device) for layer in pointer_data['deepstack_image_embeds']]
+
     # Verify shapes match
     assert pointer_memory_embeds.shape[0] == pointer_positions.shape[0], \
         f"Shape mismatch: embeds {pointer_memory_embeds.shape} vs positions {pointer_positions.shape}"
@@ -529,7 +624,8 @@ def run_models(model,
             **inputs_pointer,
             pointer_memory_embeds=pointer_memory_embeds,
             pointer_positions=pointer_positions,
-            max_new_tokens=128,
+            deepstack_pointer_embeds=deepstack_pointer_embeds,
+            max_new_tokens=256,
             do_sample=True,
         )
 
@@ -1023,21 +1119,29 @@ if __name__=='__main__':
     # Example 1: Run scan2cap with base model
     # run_scan2cap()
 
-    # Example 2: Run scan2cap with fine-tuned checkpoint
-    run_scan2cap(
-        scan2cap_annotation_path="data/demo_data/scan2cap_debug_32frames_point3r.json",
-        output_path="data/demo_data/scan2cap_val_output.json",
-        auto_preprocess=True,
-        use_viser=True
-        # model_path="outputs/scan2cap_point3r_all_frames",
-    )
+    # # Example 2: Run scan2cap with fine-tuned checkpoint
+    # run_scan2cap(
+    #     scan2cap_annotation_path="data/demo_data/scan2cap_debug_32frames_point3r.json",
+    #     output_path="data/demo_data/scan2cap_val_output.json",
+    #     auto_preprocess=True,
+    #     use_viser=True
+    #     # model_path="outputs/scan2cap_point3r_all_frames",
+    # )
 
     # Example 3: Preprocess images and run inference (original demo)
     # input_images_dir = "./data/demo_data/3d_video_object_detection/subset"
-    # pointer_data_path = "./data/demo_data/3d_video_object_detection/pointer_data.pt"
-    # query = "Describe this scene."
-    # use_viser = True
-    # model, processor, min_pixels, max_pixels, point3r_model = load_models()
-    # preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-    #                   input_images_dir, pointer_data_path, use_viser)
-    # run_models(model, processor, pointer_data_path, query)
+    # pointer_data_path = "./data/demo_data/3d_video_object_detection/pointer_data_qwen3.pt"
+    query = "Describe this scene."
+
+    # input_images_dir = "./data/demo_data/sample_data"
+    # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
+    input_images_dir = "./data/media/scannet/posed_images/scene0284_00"
+    pointer_data_path = "./data/demo_data/scene0284_00.pt"
+    
+    # query = "Describe this image."
+    model_path="Qwen/Qwen3-VL-4B-Instruct"
+    use_viser = False
+    model, processor, min_pixels, max_pixels, point3r_model = load_models(model_path=model_path)
+    preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
+                      input_images_dir, pointer_data_path, use_viser)
+    run_models(model, processor, pointer_data_path, query)

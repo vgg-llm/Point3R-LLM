@@ -43,6 +43,7 @@ def loss_of_one_batch(
     inference=False,
     image_embeds=None,
     grid_thw=None,
+    deepstack_image_embeds=None,
 ):
     if len(batch) > 2:
         assert (
@@ -54,7 +55,7 @@ def loss_of_one_batch(
     with torch.amp.autocast('cuda', enabled=not inference):
         if inference:
             if point3r_tag:
-                output = model(batch, point3r_tag=True, image_embeds=image_embeds, grid_thw_images=grid_thw)
+                output = model(batch, point3r_tag=True, image_embeds=image_embeds, grid_thw_images=grid_thw, deepstack_image_embeds=deepstack_image_embeds)
             else:
                 output = model(batch)
             preds, batch = output.ress, output.views
@@ -68,10 +69,13 @@ def loss_of_one_batch(
             # NEW: Include memory_feat in result
             if hasattr(output, 'memory_feat'):
                 result['memory_feat'] = output.memory_feat
+            # NEW: Include deepstack_memory_aligned_embeds in result
+            if hasattr(output, 'deepstack_memory_aligned_embeds'):
+                result['deepstack_memory_aligned_embeds'] = output.deepstack_memory_aligned_embeds
             return result
         else:
             if point3r_tag:
-                output = model(batch, point3r_tag=True, image_embeds=image_embeds, grid_thw_images=grid_thw)
+                output = model(batch, point3r_tag=True, image_embeds=image_embeds, grid_thw_images=grid_thw, deepstack_image_embeds=deepstack_image_embeds)
             else:
                 output = model(batch)
             preds, batch = output.ress, output.views
@@ -83,7 +87,7 @@ def loss_of_one_batch(
     return result
 
 @torch.no_grad()
-def inference(groups, model, device, image_embeds=None, grid_thw=None, verbose=True):
+def inference(groups, model, device, image_embeds=None, grid_thw=None, deepstack_image_embeds=None, verbose=True):
     ignore_keys = set(
         ["depthmap", "dataset", "label", "instance", "idx", "true_shape", "rng"]
     )
@@ -107,7 +111,8 @@ def inference(groups, model, device, image_embeds=None, grid_thw=None, verbose=T
         point3r_tag=True,
         inference=True,
         image_embeds=image_embeds,
-        grid_thw=grid_thw
+        grid_thw=grid_thw,
+        deepstack_image_embeds=deepstack_image_embeds
     )
     result = to_cpu(res)
     return result

@@ -88,6 +88,7 @@ def extract_pointer_memory(
     point3r_model,
     image_embeds=None,
     grid_thw=None,
+    deepstack_image_embeds=None,
     device='cuda',
     no_crop=False,
     full_seq=False,
@@ -122,7 +123,7 @@ def extract_pointer_memory(
 
     Returns:
         dict: Dictionary containing:
-            - 'pointer_memory_embeds': Tensor of shape (num_pointers, 2048)
+            - 'pointer_memory_embeds': Tensor of shape (num_pointers, 2048) or (num_pointers, 2560)
                                       Qwen image embeddings aligned with memory (used for LLM input)
             - 'pointer_positions': Tensor of shape (num_pointers, 3)
                                   3D positions (x, y, z) for each pointer in world coordinates
@@ -194,6 +195,7 @@ def extract_pointer_memory(
         device,
         image_embeds=image_embeds,
         grid_thw=grid_thw,
+        deepstack_image_embeds=deepstack_image_embeds,
         verbose=verbose
     )
         
@@ -220,6 +222,24 @@ def extract_pointer_memory(
             memory_feat = memory_feat[0]
         if verbose:
             print(f"Extracted memory_feat: {memory_feat.shape}")
+
+    # Extract deepstack_memory_aligned_embeds from Point3R outputs
+    deepstack_memory_aligned_embeds = None
+    if 'deepstack_memory_aligned_embeds' in outputs and outputs['deepstack_memory_aligned_embeds'] is not None:
+        deepstack_memory_aligned_embeds = outputs['deepstack_memory_aligned_embeds']
+        # deepstack is a list of per-layer embeddings, each is a list (per batch) or tensor
+        processed_deepstack = []
+        for layer_embeds in deepstack_memory_aligned_embeds:
+            if isinstance(layer_embeds, list):
+                layer_embeds = layer_embeds[-1]  # Take last batch element
+            if layer_embeds.dim() == 3:
+                layer_embeds = layer_embeds[0]  # Remove batch dimension
+            processed_deepstack.append(layer_embeds)
+        deepstack_memory_aligned_embeds = processed_deepstack
+        if verbose:
+            print(f"Extracted deepstack_memory_aligned_embeds: {len(deepstack_memory_aligned_embeds)} layers")
+            for i, layer in enumerate(deepstack_memory_aligned_embeds):
+                print(f"  - Layer {i}: {layer.shape}")
 
     # Extract pos_decode_memory from Point3R outputs
     if 'pos_decode_memory' in outputs and outputs['pos_decode_memory'] is not None:
@@ -530,6 +550,10 @@ def extract_pointer_memory(
     # Add camera poses if available
     if camera_poses is not None:
         result['camera_poses'] = camera_poses
+
+    # Add deepstack_image_embeds if available
+    if deepstack_memory_aligned_embeds is not None:
+        result['deepstack_image_embeds'] = deepstack_memory_aligned_embeds
 
     return result
 
