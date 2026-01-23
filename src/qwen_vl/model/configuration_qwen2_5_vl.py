@@ -219,6 +219,9 @@ class Qwen2_5_VLConfig(PretrainedConfig):
         memory_fusion_num_layers=1,
         memory_merger_hidden_dim=4096,
         memory_merger_type="mlp",
+        tune_feature_projector=False,
+        use_pointer_position_encoding=False,
+        pointer_pos_hidden_dim=256,
         **kwargs,
     ):
         if isinstance(vision_config, dict):
@@ -268,6 +271,9 @@ class Qwen2_5_VLConfig(PretrainedConfig):
         self.memory_fusion_num_layers = memory_fusion_num_layers
         self.memory_merger_hidden_dim = memory_merger_hidden_dim
         self.memory_merger_type = memory_merger_type
+        self.tune_feature_projector = tune_feature_projector
+        self.use_pointer_position_encoding = use_pointer_position_encoding
+        self.pointer_pos_hidden_dim = pointer_pos_hidden_dim
 
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 

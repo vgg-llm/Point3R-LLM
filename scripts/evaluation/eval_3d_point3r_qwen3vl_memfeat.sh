@@ -5,7 +5,7 @@ export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}$(cd "$(dirname "${BASH_SOURCE[0
 export NCCL_NVLS_ENABLE=0
 benchmark=scan2cap_point3r # choices: [scan2cap, scanrefer, scannet_4frames, scannet_6frames]
 output_path=logs/$(TZ="Asia/Shanghai" date "+%Y%m%d")
-model_path=./outputs/scan2cap_point3r_with_projector
+model_path=./outputs/scan2cap_point3r_Qwen3VL_memfeat
 
 model_args_str="pretrained=$model_path,use_flash_attention_2=true,max_num_frames=32,max_length=12800,use_pointer_memory=True,use_preprocessed_input=True,\
 merge_memory_feat=True,memory_fusion_method=add"
