@@ -254,3 +254,57 @@ class GeometryFeatureMerger(nn.Module):
             raise NotImplementedError(f"Merger type {self.merger_type} not implemented")
         x = x.reshape(n_image, h_patch // self.merge_size, w_patch // self.merge_size, -1)
         return x
+
+
+class PointerPositionEncoder(nn.Module):
+    """
+    Learnable position encoding for pointer memory tokens.
+    Projects continuous 3D coordinates to embedding space.
+
+    This encoder adds spatial position information to pointer embeddings
+    by projecting their 3D world coordinates through a learnable MLP.
+    The output is added to the pointer embeddings before injection into the LLM.
+
+    Args:
+        coord_dim: Dimension of input coordinates (default: 3 for xyz)
+        hidden_dim: Hidden dimension of the MLP (default: 256)
+        out_dim: Output dimension matching LLM hidden size (default: 3584 for Qwen3-VL)
+    """
+
+    def __init__(
+        self,
+        coord_dim: int = 3,
+        hidden_dim: int = 256,
+        out_dim: int = 3584,
+    ):
+        super().__init__()
+        self.coord_dim = coord_dim
+        self.hidden_dim = hidden_dim
+        self.out_dim = out_dim
+
+        self.pos_projector = nn.Sequential(
+            nn.Linear(coord_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, out_dim)
+        )
+
+    def forward(self, pointer_embeds: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+        """
+        Add position encoding to pointer embeddings.
+
+        Args:
+            pointer_embeds: Pointer memory embeddings [num_pointers, hidden_size]
+            positions: Continuous 3D coordinates [num_pointers, 3] (xyz)
+
+        Returns:
+            encoded_embeds: Pointer embeddings with position info added [num_pointers, hidden_size]
+        """
+        # Project positions to embedding space
+        pos_encoding = self.pos_projector(positions.float())
+
+        # Add to pointer embeddings
+        encoded_embeds = pointer_embeds + pos_encoding
+
+        return encoded_embeds

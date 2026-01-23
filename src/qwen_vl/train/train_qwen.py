@@ -112,6 +112,12 @@ def set_model(model_args, model):
         for n, p in model.memory_feature_fusion.named_parameters():
             p.requires_grad = tune_mff
 
+    # Pointer position encoder - independent control
+    if hasattr(model, 'pointer_position_encoder'):
+        tune_ppe = getattr(model_args, 'tune_pointer_position_encoder', True)
+        for n, p in model.pointer_position_encoder.named_parameters():
+            p.requires_grad = tune_ppe
+
     # Get LLM module - Qwen3-VL uses model.model.language_model, Qwen2.5-VL uses model.model
     if hasattr(model.model, 'language_model'):
         # Qwen3-VL structure
@@ -176,6 +182,9 @@ def train(attn_implementation="flash_attention_2"):
                 "memory_fusion_num_layers",
                 "memory_merger_hidden_dim",
                 "memory_merger_type",
+                # Pointer position encoding parameters
+                "use_pointer_position_encoding",
+                "pointer_pos_hidden_dim",
             ]:
                 setattr(config, k, getattr(model_args, k))
 

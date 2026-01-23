@@ -40,6 +40,10 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         elif getattr(config, 'tune_feature_projector', False):
             self._init_feature_projector(config)
 
+        # Initialize pointer position encoder if enabled
+        if getattr(config, 'use_pointer_position_encoding', False):
+            self._init_pointer_position_encoder(config)
+
         self.post_init()
 
     def _init_point3r_memory(self, config):
@@ -80,6 +84,20 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             input_dim=hidden_size,
             output_dim=hidden_size,  # Same dimension - no size change
             hidden_dim=getattr(config, "memory_merger_hidden_dim", 4096),
+        )
+
+    def _init_pointer_position_encoder(self, config):
+        """Initialize learnable position encoder for pointer memory tokens.
+
+        This encoder projects continuous 3D coordinates (xyz) to embedding space
+        and adds the position encoding to pointer embeddings before LLM injection.
+        """
+        from ..feature_fusion import PointerPositionEncoder
+
+        self.pointer_position_encoder = PointerPositionEncoder(
+            coord_dim=3,  # xyz coordinates
+            hidden_dim=getattr(config, 'pointer_pos_hidden_dim', 256),
+            out_dim=config.text_config.hidden_size,  # Match LLM hidden size (3584 for Qwen3-VL)
         )
 
     def _init_memory_fusion(self, config):
@@ -295,6 +313,12 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             # Simple projection without memory fusion
             elif hasattr(self, 'feature_projector'):
                 pointer_memory_embeds = self.feature_projector(pointer_memory_embeds)
+
+            # Apply position encoding if enabled and positions available
+            if hasattr(self, 'pointer_position_encoder') and pointer_positions is not None:
+                pointer_memory_embeds = self.pointer_position_encoder(
+                    pointer_memory_embeds, pointer_positions
+                )
 
             mask = input_ids == self.pointer_token_id
             mask_unsqueezed = mask.unsqueeze(-1)

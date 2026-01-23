@@ -38,6 +38,20 @@ class ModelArguments:
     tune_memory_feature_projector: bool = field(default=False)
     tune_memory_feature_fusion: bool = field(default=False)
 
+    # Pointer position encoding parameters
+    use_pointer_position_encoding: bool = field(
+        default=False,
+        metadata={"help": "Enable learnable position encoding for pointer tokens using 3D coordinates"}
+    )
+    pointer_pos_hidden_dim: int = field(
+        default=256,
+        metadata={"help": "Hidden dimension for pointer position encoder MLP"}
+    )
+    tune_pointer_position_encoder: bool = field(
+        default=True,
+        metadata={"help": "Whether to train the pointer position encoder"}
+    )
+
 @dataclass
 class DataArguments:
     dataset_use: str = field(default="")
