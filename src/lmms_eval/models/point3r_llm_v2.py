@@ -121,6 +121,11 @@ class Point3RLLMv2(lmms):
         memory_fusion_method: str = "add",
         memory_merger_hidden_dim: int = 4096,
         memory_merger_type: str = "mlp",
+        tune_feature_projector: bool = False,
+        # Pointer position encoding parameters
+        use_pointer_position_encoding: bool = False,
+        pointer_pos_hidden_dim: int = 256,
+        tune_pointer_position_encoder: bool = True,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -163,6 +168,18 @@ class Point3RLLMv2(lmms):
             config.memory_merger_hidden_dim = memory_merger_hidden_dim
             config.memory_merger_type = memory_merger_type
             eval_logger.info(f"Memory fusion enabled: method={memory_fusion_method}")
+
+        # Feature projector config (must be set before model loading)
+        if tune_feature_projector:
+            config.tune_feature_projector = tune_feature_projector
+            eval_logger.info("Feature projector enabled")
+
+        # Pointer position encoding config (must be set before model loading)
+        self.use_pointer_position_encoding = use_pointer_position_encoding
+        if use_pointer_position_encoding:
+            config.use_pointer_position_encoding = use_pointer_position_encoding
+            config.pointer_pos_hidden_dim = pointer_pos_hidden_dim
+            eval_logger.info(f"Pointer position encoding enabled: hidden_dim={pointer_pos_hidden_dim}, tune={tune_pointer_position_encoder}")
 
         # Load Point3R-enhanced model
         eval_logger.info("Using Qwen3VLForConditionalGenerationWithPoint3R")

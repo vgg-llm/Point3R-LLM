@@ -301,8 +301,8 @@ class PointerPositionEncoder(nn.Module):
         Returns:
             encoded_embeds: Pointer embeddings with position info added [num_pointers, hidden_size]
         """
-        # Project positions to embedding space
-        pos_encoding = self.pos_projector(positions.float())
+        # Project positions to embedding space (match dtype of weights)
+        pos_encoding = self.pos_projector(positions.to(self.pos_projector[0].weight.dtype))
 
         # Add to pointer embeddings
         encoded_embeds = pointer_embeds + pos_encoding
