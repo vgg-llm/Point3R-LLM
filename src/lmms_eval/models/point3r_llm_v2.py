@@ -76,6 +76,8 @@ from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalG
 from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
 from qwen_vl.model.point3r.point3r import Point3R
 from qwen_vl.model.point3r.extract_memory import extract_pointer_memory
+from qwen_vl.utils.config_validation import validate_parameters
+from qwen_vl.data.pointer_data import load_pointer_data
 
 try:
     from qwen_vl_utils import extract_vision_info, process_vision_info
@@ -130,6 +132,29 @@ class Point3RLLMv2(lmms):
     ) -> None:
         super().__init__()
         assert kwargs == {}, f"Unexpected kwargs: {kwargs}"
+
+        # Validate evaluation arguments against training config
+        eval_args = {
+            "pointer_memory_size": pointer_memory_size,
+            "use_pointer_position_encoding": use_pointer_position_encoding,
+            "pointer_pos_hidden_dim": pointer_pos_hidden_dim,
+            "merge_memory_feat": merge_memory_feat,
+            "memory_fusion_method": memory_fusion_method,
+            "min_pixels": min_pixels,
+            "max_pixels": max_pixels,
+            "memory_merger_hidden_dim": memory_merger_hidden_dim,
+            "memory_merger_type": memory_merger_type,
+        }
+        try:
+            validate_parameters(
+                model_path=pretrained,
+                eval_args=eval_args,
+                fail_on_critical=True,
+                warn_on_high=True,
+            )
+        except ValueError as e:
+            eval_logger.error(str(e))
+            raise
 
         self.use_custom_video_loader = use_custom_video_loader
         self.fps = fps
@@ -458,12 +483,16 @@ class Point3RLLMv2(lmms):
 
                     if "pointer_data" in doc:
                         pointer_data_path = doc["pointer_data"]
-                        pointer_data_path = os.path.join(self.base_dir, pointer_data_path)
-                        if os.path.exists(pointer_data_path):
-                            pointer_data = torch.load(pointer_data_path, weights_only=True)
-                            eval_logger.debug(f"Loaded pointer data from {pointer_data_path}")
-                        else:
-                            eval_logger.warning(f"Pointer data file not found: {pointer_data_path}")
+                        try:
+                            pointer_data = load_pointer_data(
+                                pointer_data_path=pointer_data_path,
+                                base_dir=self.base_dir,
+                                max_pointer_tokens=8000,
+                            )
+                            eval_logger.debug(f"Loaded pointer data: {pointer_data['num_pointers']} tokens")
+                        except FileNotFoundError as e:
+                            eval_logger.warning(str(e))
+                            pointer_data = None
                     else:
                         eval_logger.warning(f"No 'pointer_data' field found in document for task {task}")
                 
@@ -591,9 +620,9 @@ class Point3RLLMv2(lmms):
                 generation_kwargs["pointer_positions"] = pointer_data['pointer_positions'].to(device)
 
                 # Add deepstack_pointer_embeds if available
-                if 'deepstack_image_embeds' in pointer_data and pointer_data['deepstack_image_embeds'] is not None:
+                if 'deepstack_pointer_embeds' in pointer_data and pointer_data['deepstack_pointer_embeds'] is not None:
                     generation_kwargs["deepstack_pointer_embeds"] = [
-                        layer.to(device) for layer in pointer_data['deepstack_image_embeds']
+                        layer.to(device) for layer in pointer_data['deepstack_pointer_embeds']
                     ]
                 else:
                     generation_kwargs["deepstack_pointer_embeds"] = None

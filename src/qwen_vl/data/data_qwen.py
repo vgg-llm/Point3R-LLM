@@ -24,6 +24,7 @@ import transformers
 from . import data_list
 from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2, get_rope_index_qwen3vl
 from .utils import prepare_image_inputs
+from .pointer_data import load_pointer_data, expand_pointer_tokens
 
 IGNORE_INDEX = -100
 IMAGE_TOKEN_INDEX = 151655
@@ -488,39 +489,22 @@ class LazySupervisedDataset(Dataset):
                 second_per_grid_ts=second_per_grid_ts,
             )
         elif "pointer_data" in sources[0]:
-            # Handle Point3R pointer memory data
+            # Handle Point3R pointer memory data using shared utility
             pointer_data_path = sources[0]["pointer_data"]
             data_folder = self.list_data_dict[i]["data_path"]
-            full_pointer_path = os.path.join(data_folder, pointer_data_path)
 
-            # Load pointer memory from file - only extract needed keys to save memory
-            pointer_data = torch.load(full_pointer_path, weights_only=True)
+            # Load pointer data using shared utility (handles truncation and memory management)
+            pointer_data = load_pointer_data(
+                pointer_data_path=pointer_data_path,
+                base_dir=data_folder,
+                max_pointer_tokens=8000,  # TODO: add this to data_args
+            )
+            num_pointer_tokens = pointer_data['num_pointers']
             pointer_memory_embeds = pointer_data['pointer_memory_embeds']
             pointer_positions = pointer_data['pointer_positions']
-            # Load deepstack_image_embeds if available (needed for Qwen3-VL deepstack features)
-            deepstack_pointer_embeds = pointer_data.get('deepstack_image_embeds', None)
+            deepstack_pointer_embeds = pointer_data['deepstack_pointer_embeds']
             memory_feat = pointer_data['memory_feat']
-            
-            # Free memory immediately - don't keep memory_feat, camera_poses etc.
-            del pointer_data
 
-            # The conversation contains a SINGLE <|pointer_pad|> token:
-            # "<|vision_start|><|pointer_pad|><|vision_end|>\nDescribe the object..."
-            #
-            # We need to EXPAND it to N <|pointer_pad|> tokens based on pointer_memory_embeds.shape[0]
-            # This is exactly what Qwen2_5_VLProcessorWithPoint3R does (lines 390-400)
-
-            num_pointer_tokens = pointer_memory_embeds.shape[0]
-
-            max_pointer_tokens = 8000  # TODO: add this to data_args
-            if num_pointer_tokens > max_pointer_tokens: 
-                num_pointer_tokens = max_pointer_tokens
-                pointer_memory_embeds = pointer_memory_embeds[:max_pointer_tokens].clone()
-                pointer_positions = pointer_positions[:max_pointer_tokens].clone()
-                if deepstack_pointer_embeds is not None:
-                    deepstack_pointer_embeds = [d[:max_pointer_tokens].clone() for d in deepstack_pointer_embeds]
-
-                memory_feat = memory_feat[:max_pointer_tokens].clone()
             # Process conversations with pointer token expansion
             sources_conv = copy.deepcopy([e["conversations"] for e in sources])
 
@@ -560,12 +544,8 @@ class LazySupervisedDataset(Dataset):
                     role = roles.get(role, role)
 
                     # EXPAND pointer token: single <|pointer_pad|> → N <|pointer_pad|>
-                    # This mimics what Qwen2_5_VLProcessorWithPoint3R does
-                    if pointer_token in content:
-                        content = content.replace(
-                            pointer_token,
-                            pointer_token * num_pointer_tokens
-                        )
+                    # Using shared utility to ensure consistent expansion
+                    content = expand_pointer_tokens(content, num_pointer_tokens, pointer_token)
 
                     # Tokenize the expanded content
                     conv_formatted = [{"role": role, "content": content}]
