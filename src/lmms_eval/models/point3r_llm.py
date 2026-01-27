@@ -116,6 +116,11 @@ class Point3RLLM(lmms):
         use_preprocessed_input: bool = True,
         base_dir: Optional[str] = "data/media",
         extract_batch_size: int = 2,
+        # Memory feature fusion parameters (Point3R)
+        merge_memory_feat: bool = False,
+        memory_fusion_method: str = "add",
+        memory_merger_hidden_dim: int = 4096,
+        memory_merger_type: str = "mlp",
         **kwargs,
     ) -> None:
         super().__init__()
@@ -130,6 +135,7 @@ class Point3RLLM(lmms):
         self.use_preprocessed_input = use_preprocessed_input
         self.extract_batch_size = extract_batch_size
         self.base_dir = base_dir
+        self.merge_memory_feat = merge_memory_feat
 
         # Cache for pre-loaded pointer data
         self.pointer_data_cache = {}
@@ -149,6 +155,14 @@ class Point3RLLM(lmms):
             self.device_map = f"cuda:{accelerator.local_process_index}"
 
         config = AutoConfig.from_pretrained(pretrained)
+
+        # Memory fusion config (must be set before model loading)
+        if merge_memory_feat:
+            config.merge_memory_feat = merge_memory_feat
+            config.memory_fusion_method = memory_fusion_method
+            config.memory_merger_hidden_dim = memory_merger_hidden_dim
+            config.memory_merger_type = memory_merger_type
+            eval_logger.info(f"Memory fusion enabled: method={memory_fusion_method}")
 
         # Load Point3R-enhanced model
         eval_logger.info("Using Qwen2_5_VLForConditionalGenerationWithPoint3R")
@@ -293,6 +307,9 @@ class Point3RLLM(lmms):
         This follows the two-stage process from demo_point3r.py:
         Stage 1: Extract image embeddings via model.visual()
         Stage 2: Pass to Point3R for pointer memory extraction
+
+        Note: Unlike Qwen3-VL, Qwen2.5-VL's visual encoder does not return
+        deepstack embeddings, so we don't handle them here.
         """
         if not self.use_pointer_memory or self.point3r_model is None:
             return None
@@ -320,6 +337,7 @@ class Point3RLLM(lmms):
                 pixel_values = pixel_values.to(model_device)
                 grid_thw = processed_batch.image_grid_thw
 
+                # Qwen2.5-VL visual encoder returns only hidden_states (no deepstack)
                 batch_embeds = self.model.visual(pixel_values, grid_thw=grid_thw)
 
                 image_embeds_list.append(batch_embeds)
@@ -531,6 +549,10 @@ class Point3RLLM(lmms):
             if self.use_pointer_memory and pointer_data is not None:
                 generation_kwargs["pointer_memory_embeds"] = pointer_data['pointer_memory_embeds'].to(device)
                 generation_kwargs["pointer_positions"] = pointer_data['pointer_positions'].to(device)
+
+                # Add memory_feat if available AND merge_memory_feat is enabled
+                if self.merge_memory_feat and 'memory_feat' in pointer_data and pointer_data['memory_feat'] is not None:
+                    generation_kwargs["memory_feat"] = pointer_data['memory_feat'].to(device)
 
             cont = self.model.generate(**generation_kwargs)
 
