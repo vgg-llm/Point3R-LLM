@@ -185,6 +185,10 @@ def train(attn_implementation="flash_attention_2"):
                 # Pointer position encoding parameters
                 "use_pointer_position_encoding",
                 "pointer_pos_hidden_dim",
+                # RoPE ablation parameters
+                "rope_mode",
+                "rope_position_range",
+                "tune_rope3d_continuous",
             ]:
                 setattr(config, k, getattr(model_args, k))
 
@@ -244,7 +248,19 @@ def train(attn_implementation="flash_attention_2"):
             model.resize_token_embeddings(len(processor.tokenizer))
 
             data_args.image_processor = processor.image_processor
-            data_args.model_type = "qwen3vl-spatial"  # Use 4D RoPE for pointer memory
+
+            # Determine model type based on rope_mode
+            rope_mode = getattr(model_args, "rope_mode", "none")
+            if rope_mode == "discrete":
+                data_args.model_type = "qwen3vl-rope-discrete"
+            elif rope_mode == "continuous":
+                data_args.model_type = "qwen3vl-rope-continuous"
+            else:
+                data_args.model_type = "qwen3vl"
+
+            # Pass RoPE config to model
+            model.config.rope_mode = rope_mode
+            model.config.rope_position_range = getattr(model_args, "rope_position_range", 128)
         else:
             from transformers import Qwen3VLForConditionalGeneration
             model = Qwen3VLForConditionalGeneration.from_pretrained(

@@ -36,7 +36,6 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         # Initialize memory feature fusion modules if enabled
         if getattr(config, 'merge_memory_feat', False):
             self._init_memory_fusion(config)
-            self._init_memory_fusion_as_residual()
         elif getattr(config, 'tune_feature_projector', False):
             self._init_feature_projector(config)
 
@@ -44,7 +43,14 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         if getattr(config, 'use_pointer_position_encoding', False):
             self._init_pointer_position_encoder(config)
 
+        # Initialize RoPE3D-Continuous encoder if enabled
+        if getattr(config, 'rope_mode', 'none') == 'continuous':
+            self._init_rope3d_continuous(config)
+
         self.post_init()
+
+        # Apply custom weight initialization AFTER post_init() to prevent overwriting
+        self._init_custom_weights()
 
     def _init_point3r_memory(self, config):
         """Initialize Point3R model for on-the-fly 3D feature extraction."""
@@ -100,6 +106,91 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             out_dim=config.text_config.hidden_size,  # Match LLM hidden size (3584 for Qwen3-VL)
         )
 
+    def _init_rope3d_continuous(self, config):
+        """Initialize RoPE3DContinuous encoder with output projector (like memory_feat fusion).
+
+        This encoder applies continuous 3D rotary position encoding to pointer embeddings
+        using the RoPE3DContinuous module from Point3R.
+
+        RoPE3DContinuous preserves input dimension - it splits the embedding into 3 parts
+        for x, y, z encoding and concatenates them back. No input projection needed.
+        """
+        from ..croco.pos_embed_con import RoPE3DContinuous
+
+        hidden_size = config.text_config.hidden_size  # 3584 for Qwen3-VL
+
+        # RoPE3DContinuous handles any dimension - it splits D into 3 parts:
+        # x_token: [..., :D//3], y_token: [..., D//3:2*D//3], z_token: [..., 2*D//3:]
+        # The remainder (D % 3) goes to z_token, so output size equals input size.
+        self.rope3d_continuous = RoPE3DContinuous(freq=100.0, F0=1.0)
+
+        # Output projector for learnable residual adaptation
+        # Note: Custom weight init (small weights) is done in _init_custom_weights() AFTER post_init()
+        self.rope3d_output_projector = nn.Linear(hidden_size, hidden_size)
+
+    def _init_custom_weights(self):
+        """Apply custom weight initialization for residual learning modules.
+
+        Must be called AFTER post_init() to prevent overwriting by _init_weights().
+        This ensures that modules using additive fusion start with small weights,
+        allowing gradual learning without disrupting pretrained features.
+        """
+        with torch.no_grad():
+            # RoPE3D continuous projector - small weights for residual learning
+            if hasattr(self, 'rope3d_output_projector'):
+                self.rope3d_output_projector.weight.data.mul_(0.001)
+                self.rope3d_output_projector.bias.data.zero_()
+
+            # Memory feature projector - small weights for residual learning
+            if hasattr(self, 'memory_feature_projector'):
+                for module in self.memory_feature_projector.modules():
+                    if isinstance(module, nn.Linear):
+                        module.weight.data.mul_(0.001)
+                        if module.bias is not None:
+                            module.bias.data.zero_()
+
+            # Memory feature fusion module - custom initialization based on fusion method
+            if hasattr(self, 'memory_feature_fusion'):
+                if hasattr(self.memory_feature_fusion, 'fusion_method'):
+                    if self.memory_feature_fusion.fusion_method == "weighted":
+                        # Initialize weights to 0.5, 0.5 (balanced)
+                        if hasattr(self.memory_feature_fusion, 'weight_2d'):
+                            self.memory_feature_fusion.weight_2d.fill_(0.5)
+                        if hasattr(self.memory_feature_fusion, 'weight_3d'):
+                            self.memory_feature_fusion.weight_3d.fill_(0.5)
+                    elif self.memory_feature_fusion.fusion_method in ["cross_attention", "self_attention"]:
+                        # Scale down attention layers
+                        for module in self.memory_feature_fusion.modules():
+                            if isinstance(module, nn.Linear):
+                                module.weight.data.mul_(0.01)
+                                if module.bias is not None:
+                                    module.bias.data.zero_()
+
+    def _apply_continuous_rope(self, pointer_embeds, positions):
+        """Apply RoPE3DContinuous and add to embeddings (like memory_feat fusion).
+
+        Args:
+            pointer_embeds: Pointer embeddings (num_pointers, hidden_size)
+            positions: 3D positions for each pointer (num_pointers, 3) as [h, w, d]
+
+        Returns:
+            Pointer embeddings with continuous RoPE position encoding added
+        """
+        # Reshape for RoPE3DContinuous: expects (B, heads, ntokens, D)
+        embeds = pointer_embeds.unsqueeze(0).unsqueeze(0)  # (1, 1, N, hidden_size)
+        pos = positions.unsqueeze(0)  # (1, N, 3)
+
+        # Apply continuous 3D RoPE directly - it preserves input dimension
+        # RoPE3DContinuous splits embeds into x, y, z parts, applies RoPE1D to each,
+        # and concatenates them back to the original dimension
+        encoded = self.rope3d_continuous(embeds, pos)  # (1, 1, N, hidden_size)
+
+        # Project for learnable adaptation and add (like memory_feat fusion)
+        rope_features = self.rope3d_output_projector(encoded)
+        rope_features = rope_features.squeeze(0).squeeze(0)  # (N, hidden_size)
+
+        return pointer_embeds + rope_features  # Additive fusion
+
     def _init_memory_fusion(self, config):
         """Initialize memory feature fusion modules for Point3R memory_feat integration.
 
@@ -132,10 +223,14 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         self.memory_feature_fusion = FeatureFusionModule(fusion_config)
 
     def _init_memory_fusion_as_residual(self):
-        """Initialize memory fusion modules to preserve input features initially.
+        """DEPRECATED: Use _init_custom_weights() instead.
 
-        This ensures that memory_feat fusion doesn't corrupt pointer embeddings
-        when using pretrained checkpoints.
+        This method is no longer called from __init__ because post_init() would
+        overwrite the custom weights. The functionality has been moved to
+        _init_custom_weights() which is called AFTER post_init().
+
+        Original purpose: Initialize memory fusion modules to preserve input features initially,
+        ensuring memory_feat fusion doesn't corrupt pointer embeddings when using pretrained checkpoints.
         """
         if not hasattr(self, 'memory_feature_projector') or not hasattr(self, 'memory_feature_fusion'):
             return
@@ -228,15 +323,36 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         pointer_positions: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Calculate RoPE indices - delegate to parent for all cases.
-        Pointer tokens use sequential positions like text tokens (no special 3D/4D PE).
+        Calculate RoPE indices based on rope_mode configuration.
+
+        rope_mode options:
+        - "none": No special handling for pointers (parent behavior, 3D RoPE)
+        - "discrete": Discretized 4D positions for pointer tokens
+        - "continuous": Base 3D positions; continuous RoPE applied in forward
         """
-        return self.model.get_rope_index(
-            input_ids=input_ids,
-            image_grid_thw=image_grid_thw,
-            video_grid_thw=video_grid_thw,
-            attention_mask=attention_mask,
-        )
+        rope_mode = getattr(self.config, 'rope_mode', 'none')
+
+        if rope_mode == "discrete" and pointer_positions is not None:
+            from ...data.rope2d import get_rope_index_qwen3vl_discrete
+            return get_rope_index_qwen3vl_discrete(
+                spatial_merge_size=2,
+                input_ids=input_ids,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                attention_mask=attention_mask,
+                pointer_memory_embeds=pointer_memory_embeds,
+                pointer_positions=pointer_positions,
+                position_range=getattr(self.config, 'rope_position_range', 128),
+            )
+        else:
+            # For "none" and "continuous" modes, use parent's get_rope_index (3D RoPE)
+            # Continuous RoPE is applied separately in forward pass
+            return self.model.get_rope_index(
+                input_ids=input_ids,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                attention_mask=attention_mask,
+            )
 
     def forward(
         self,
@@ -317,6 +433,12 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             # Apply position encoding if enabled and positions available
             if hasattr(self, 'pointer_position_encoder') and pointer_positions is not None:
                 pointer_memory_embeds = self.pointer_position_encoder(
+                    pointer_memory_embeds, pointer_positions
+                )
+
+            # Apply RoPE3D-Continuous if enabled
+            if hasattr(self, 'rope3d_continuous') and pointer_positions is not None:
+                pointer_memory_embeds = self._apply_continuous_rope(
                     pointer_memory_embeds, pointer_positions
                 )
 

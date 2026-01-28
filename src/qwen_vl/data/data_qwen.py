@@ -22,7 +22,7 @@ from decord import VideoReader
 import transformers
 
 from . import data_list
-from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2, get_rope_index_qwen3vl
+from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2, get_rope_index_qwen3vl, get_rope_index_qwen3vl_discrete
 from .utils import prepare_image_inputs
 from .pointer_data import load_pointer_data, expand_pointer_tokens
 
@@ -150,8 +150,14 @@ class LazySupervisedDataset(Dataset):
         self.model_type = data_args.model_type
         if data_args.model_type == "qwen3vl":
             self.get_rope_index = get_rope_index_qwen3vl
-        if data_args.model_type == "qwen3vl-spatial":
+        elif data_args.model_type == "qwen3vl-rope-discrete":
+            self.get_rope_index = get_rope_index_qwen3vl_discrete
+        elif data_args.model_type == "qwen3vl-rope-continuous":
+            # Use base qwen3vl; continuous RoPE applied in model forward
             self.get_rope_index = get_rope_index_qwen3vl
+        elif data_args.model_type == "qwen3vl-spatial":
+            # Backward compatibility: use discrete RoPE for spatial
+            self.get_rope_index = get_rope_index_qwen3vl_discrete
         elif data_args.model_type == "qwen2.5vl-spatial":
             self.get_rope_index = get_rope_index_txyz
         elif data_args.model_type == "qwen2.5vl":

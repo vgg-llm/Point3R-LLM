@@ -128,6 +128,9 @@ class Point3RLLMv2(lmms):
         use_pointer_position_encoding: bool = False,
         pointer_pos_hidden_dim: int = 256,
         tune_pointer_position_encoder: bool = True,
+        # RoPE ablation parameters
+        rope_mode: str = "none",
+        rope_position_range: int = 128,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -144,6 +147,8 @@ class Point3RLLMv2(lmms):
             "max_pixels": max_pixels,
             "memory_merger_hidden_dim": memory_merger_hidden_dim,
             "memory_merger_type": memory_merger_type,
+            "rope_mode": rope_mode,
+            "rope_position_range": rope_position_range,
         }
         try:
             validate_parameters(
@@ -205,6 +210,13 @@ class Point3RLLMv2(lmms):
             config.use_pointer_position_encoding = use_pointer_position_encoding
             config.pointer_pos_hidden_dim = pointer_pos_hidden_dim
             eval_logger.info(f"Pointer position encoding enabled: hidden_dim={pointer_pos_hidden_dim}, tune={tune_pointer_position_encoder}")
+
+        # RoPE ablation config (must be set before model loading)
+        self.rope_mode = rope_mode
+        config.rope_mode = rope_mode
+        config.rope_position_range = rope_position_range
+        if rope_mode != "none":
+            eval_logger.info(f"RoPE mode for pointers: {rope_mode}, position_range={rope_position_range}")
 
         # Load Point3R-enhanced model
         eval_logger.info("Using Qwen3VLForConditionalGenerationWithPoint3R")

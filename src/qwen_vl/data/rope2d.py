@@ -140,6 +140,257 @@ def get_rope_index_qwen3vl(
         return position_ids, mrope_position_deltas
 
 
+def get_rope_index_qwen3vl_discrete(
+    spatial_merge_size: Optional[int] = 2,
+    input_ids: Optional[torch.LongTensor] = None,
+    image_grid_thw: Optional[torch.LongTensor] = None,
+    video_grid_thw: Optional[torch.LongTensor] = None,
+    attention_mask: Optional[torch.Tensor] = None,
+    pointer_memory_embeds: Optional[torch.Tensor] = None,
+    pointer_positions: Optional[torch.Tensor] = None,
+    position_range: int = 128,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Calculate 4D RoPE indices for Qwen3VL with discretized pointer positions.
+
+    Similar to get_rope_index_txyz, but normalizes and discretizes pointer_positions
+    to [0, position_range-1] range to ensure non-negative integer position indices.
+
+    Args:
+        spatial_merge_size: Spatial merge size for vision tokens
+        input_ids: Input token IDs (batch_size, sequence_length)
+        image_grid_thw: Grid dimensions for images (num_images, 3)
+        video_grid_thw: Grid dimensions for videos (num_videos, 3)
+        attention_mask: Attention mask (batch_size, sequence_length)
+        pointer_memory_embeds: Pointer memory embeddings (presence indicates pointer mode)
+        pointer_positions: 3D positions for each pointer (num_pointers, 3) as [h, w, d]
+        position_range: Discretization range [0, position_range-1]. Default: 128
+
+    Returns:
+        position_ids: 4D position IDs (4, batch_size, sequence_length) for [T, H, W, D]
+        mrope_position_deltas: Position deltas for autoregressive decoding
+    """
+    image_token_id = 151655
+    video_token_id = 151656
+    pointer_token_id = 151665
+    vision_start_token_id = 151652
+    mrope_position_deltas = []
+
+    # Discretize pointer positions if available
+    discretized_positions = None
+    if pointer_positions is not None:
+        # Normalize positions using min-max normalization per dimension
+        pos_min = pointer_positions.min(dim=0, keepdim=True).values
+        pos_max = pointer_positions.max(dim=0, keepdim=True).values
+        pos_range = pos_max - pos_min
+        # Avoid division by zero
+        pos_range = torch.where(pos_range == 0, torch.ones_like(pos_range), pos_range)
+        normalized = (pointer_positions - pos_min) / pos_range  # [0, 1]
+        # Discretize to [0, position_range-1]
+        discretized_positions = (normalized * (position_range - 1)).long().clamp(0, position_range - 1)
+
+    if input_ids is not None and (image_grid_thw is not None or video_grid_thw is not None):
+        # Handle image/video inputs with 4D positions
+        total_input_ids = input_ids
+        if attention_mask is None:
+            attention_mask = torch.ones_like(total_input_ids)
+        position_ids = torch.ones(
+            4,
+            input_ids.shape[0],
+            input_ids.shape[1],
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        image_index, video_index = 0, 0
+        attention_mask = attention_mask.to(total_input_ids.device)
+
+        for i, input_ids in enumerate(total_input_ids):
+            input_ids = input_ids[attention_mask[i] == 1]
+            image_nums, video_nums = 0, 0
+            vision_start_indices = torch.argwhere(input_ids == vision_start_token_id).squeeze(1)
+            vision_tokens = input_ids[vision_start_indices + 1]
+            image_nums = (vision_tokens == image_token_id).sum()
+            video_nums = (vision_tokens == video_token_id).sum()
+            input_tokens = input_ids.tolist()
+            llm_pos_ids_list: list = []
+            st = 0
+            remain_images, remain_videos = image_nums, video_nums
+
+            for _ in range(image_nums + video_nums):
+                if image_token_id in input_tokens and remain_images > 0:
+                    ed_image = input_tokens.index(image_token_id, st)
+                else:
+                    ed_image = len(input_tokens) + 1
+                if video_token_id in input_tokens and remain_videos > 0:
+                    ed_video = input_tokens.index(video_token_id, st)
+                else:
+                    ed_video = len(input_tokens) + 1
+
+                if ed_image < ed_video:
+                    t, h, w = (
+                        image_grid_thw[image_index][0],
+                        image_grid_thw[image_index][1],
+                        image_grid_thw[image_index][2],
+                    )
+                    image_index += 1
+                    remain_images -= 1
+                    ed = ed_image
+                else:
+                    t, h, w = (
+                        video_grid_thw[video_index][0],
+                        video_grid_thw[video_index][1],
+                        video_grid_thw[video_index][2],
+                    )
+                    video_index += 1
+                    remain_videos -= 1
+                    ed = ed_video
+
+                llm_grid_t, llm_grid_h, llm_grid_w = (
+                    t.item(),
+                    h.item() // spatial_merge_size,
+                    w.item() // spatial_merge_size,
+                )
+                text_len = ed - st
+
+                st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
+                llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(4, -1) + st_idx)
+
+                # Create 4D position indices for vision tokens
+                t_index = torch.arange(llm_grid_t).view(-1, 1).expand(-1, llm_grid_h * llm_grid_w).flatten()
+                h_index = torch.arange(llm_grid_h).view(1, -1, 1).expand(llm_grid_t, -1, llm_grid_w).flatten()
+                w_index = torch.arange(llm_grid_w).view(1, 1, -1).expand(llm_grid_t, llm_grid_h, -1).flatten()
+                d_index = torch.arange(len(t_index), dtype=t_index.dtype, device=t_index.device)
+                llm_pos_ids_list.append(torch.stack([t_index, h_index, w_index, d_index]) + text_len + st_idx)
+                st = ed + llm_grid_t * llm_grid_h * llm_grid_w
+
+            if st < len(input_tokens):
+                st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
+                text_len = len(input_tokens) - st
+                llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(4, -1) + st_idx)
+
+            if len(llm_pos_ids_list) > 0:
+                llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(4, -1)
+                position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
+                mrope_position_deltas.append(llm_positions[0].max() + 1 - len(total_input_ids[i]))
+            else:
+                mrope_position_deltas.append(0)
+
+        mrope_position_deltas = torch.tensor(mrope_position_deltas, device=total_input_ids.device).unsqueeze(1)
+        return position_ids, mrope_position_deltas
+
+    elif input_ids is not None and pointer_memory_embeds is not None:
+        # Handle pointer memory inputs with discretized 4D positions
+        total_input_ids = input_ids
+        if attention_mask is None:
+            attention_mask = torch.ones_like(total_input_ids)
+        position_ids = torch.ones(
+            4,
+            input_ids.shape[0],
+            input_ids.shape[1],
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        attention_mask = attention_mask.to(total_input_ids.device)
+        mrope_position_deltas = []
+
+        for i, input_ids in enumerate(total_input_ids):
+            input_ids = input_ids[attention_mask[i] == 1]
+            input_tokens = input_ids.tolist()
+
+            llm_pos_ids_list: list = []
+            pointer_idx = 0
+            current_pos = 0
+
+            i_token = 0
+            while i_token < len(input_tokens):
+                if input_tokens[i_token] == pointer_token_id:
+                    # Find consecutive pointer tokens
+                    pointer_start = i_token
+                    pointer_end = i_token
+                    while pointer_end < len(input_tokens) and input_tokens[pointer_end] == pointer_token_id:
+                        pointer_end += 1
+
+                    num_consecutive_pointers = pointer_end - pointer_start
+                    shared_temporal_pos = current_pos
+
+                    pointer_t_ids = []
+                    pointer_h_ids = []
+                    pointer_w_ids = []
+                    pointer_d_ids = []
+
+                    for j in range(num_consecutive_pointers):
+                        pointer_t_ids.append(shared_temporal_pos)
+
+                        if discretized_positions is not None and pointer_idx < discretized_positions.shape[0]:
+                            h_pos = discretized_positions[pointer_idx][0].item()
+                            w_pos = discretized_positions[pointer_idx][1].item()
+                            d_pos = discretized_positions[pointer_idx][2].item()
+                        else:
+                            # Fallback: use sequential positions
+                            h_pos = current_pos + j
+                            w_pos = current_pos + j
+                            d_pos = current_pos + j
+
+                        pointer_h_ids.append(h_pos)
+                        pointer_w_ids.append(w_pos)
+                        pointer_d_ids.append(d_pos)
+                        pointer_idx += 1
+
+                    pointer_pos_ids = torch.tensor(
+                        [pointer_t_ids, pointer_h_ids, pointer_w_ids, pointer_d_ids],
+                        dtype=input_ids.dtype,
+                        device=input_ids.device
+                    )
+                    llm_pos_ids_list.append(pointer_pos_ids)
+                    current_pos += num_consecutive_pointers
+                    i_token = pointer_end
+                else:
+                    # Regular text tokens
+                    text_start = i_token
+                    text_end = i_token
+                    while text_end < len(input_tokens) and input_tokens[text_end] != pointer_token_id:
+                        text_end += 1
+
+                    text_len = text_end - text_start
+                    text_pos_ids = torch.arange(text_len, dtype=input_ids.dtype, device=input_ids.device)
+                    text_pos_ids = text_pos_ids.view(1, -1).expand(4, -1) + current_pos
+                    llm_pos_ids_list.append(text_pos_ids)
+                    current_pos += text_len
+                    i_token = text_end
+
+            if len(llm_pos_ids_list) > 0:
+                llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(4, -1)
+                position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
+                mrope_position_deltas.append(llm_positions[0].max() + 1 - len(total_input_ids[i]))
+            else:
+                mrope_position_deltas.append(0)
+
+        mrope_position_deltas = torch.tensor(mrope_position_deltas, device=total_input_ids.device).unsqueeze(1)
+        return position_ids, mrope_position_deltas
+
+    else:
+        # Pure text or no visual content: use sequential 4D positions
+        if attention_mask is not None:
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            position_ids = position_ids.unsqueeze(0).expand(4, -1, -1).to(attention_mask.device)
+            max_position_ids = position_ids.max(0, keepdim=False)[0].max(-1, keepdim=True)[0]
+            mrope_position_deltas = max_position_ids + 1 - attention_mask.shape[-1]
+        else:
+            position_ids = (
+                torch.arange(input_ids.shape[1], device=input_ids.device)
+                .view(1, 1, -1)
+                .expand(4, input_ids.shape[0], -1)
+            )
+            mrope_position_deltas = torch.zeros(
+                [input_ids.shape[0], 1],
+                device=input_ids.device,
+                dtype=input_ids.dtype,
+            )
+
+        return position_ids, mrope_position_deltas
+
+
 def get_rope_index_txyz(
     spatial_merge_size: Optional[int] = 2,
     input_ids: Optional[torch.LongTensor] = None,

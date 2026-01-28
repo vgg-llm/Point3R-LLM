@@ -52,6 +52,20 @@ class ModelArguments:
         metadata={"help": "Whether to train the pointer position encoder"}
     )
 
+    # RoPE ablation parameters for pointer tokens
+    rope_mode: str = field(
+        default="none",
+        metadata={"help": "RoPE mode for pointer tokens: 'none', 'discrete', 'continuous'"}
+    )
+    rope_position_range: int = field(
+        default=128,
+        metadata={"help": "Discretization range [0, range-1] for discrete RoPE mode"}
+    )
+    tune_rope3d_continuous: bool = field(
+        default=True,
+        metadata={"help": "Whether to train the RoPE3D continuous projectors"}
+    )
+
 @dataclass
 class DataArguments:
     dataset_use: str = field(default="")
