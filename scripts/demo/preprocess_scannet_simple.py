@@ -39,11 +39,14 @@ def main():
                         help='EMA decay factor for embedding merge: updated = lambda * new + (1-lambda) * old (default: 1.0)')
     parser.add_argument('--save-name', type=str, default=None,
                         help='Output directory name under data/media/scannet/ (default: auto-generated from lambda value)')
+    parser.add_argument('--sample-ct', type=int, default=32,
+                        help='Number of images to uniformly sample per scene (default: 32)')
     args = parser.parse_args()
 
     gpu_id = args.gpu_id
     total_gpus = args.total_gpus
     lambda_decay = args.lambda_decay
+    sample_ct = args.sample_ct
 
     # Determine save directory name
     if args.save_name is not None:
@@ -87,7 +90,7 @@ def main():
         try:
             preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
                               input_images_dir, pointer_data_path, use_viser=False, unload_point3r_model=False,
-                              lambda_decay=lambda_decay)
+                              lambda_decay=lambda_decay, sample_ct=sample_ct)
         except Exception as e:
             print(f"\nFailed to process {input_images_dir}: {e}")
             continue

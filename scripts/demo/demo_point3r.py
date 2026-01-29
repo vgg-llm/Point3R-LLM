@@ -411,6 +411,7 @@ def preprocess_images(
         input_poses_dir = None,
         scannet_pth_path = None,
         lambda_decay = 1.0,
+        sample_ct = 32,
     ):
 
     # Example 2: Using the model with pointer memory
@@ -425,7 +426,7 @@ def preprocess_images(
     p = Path(input_images_dir)
     image_paths = sorted(list(p.glob("*.jpg")) + list(p.glob("*.jpeg")))
     # Uniformly sample 32 paths
-    sample_ct = 8
+    
     if len(image_paths) > sample_ct:
         step = len(image_paths) / sample_ct
         image_paths = [image_paths[int(i * step)] for i in range(sample_ct)]
