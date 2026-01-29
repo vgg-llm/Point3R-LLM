@@ -44,6 +44,7 @@ def loss_of_one_batch(
     image_embeds=None,
     grid_thw=None,
     deepstack_image_embeds=None,
+    lambda_decay=1.0,
 ):
     if len(batch) > 2:
         assert (
@@ -55,7 +56,7 @@ def loss_of_one_batch(
     with torch.amp.autocast('cuda', enabled=not inference):
         if inference:
             if point3r_tag:
-                output = model(batch, point3r_tag=True, image_embeds=image_embeds, grid_thw_images=grid_thw, deepstack_image_embeds=deepstack_image_embeds)
+                output = model(batch, point3r_tag=True, image_embeds=image_embeds, grid_thw_images=grid_thw, deepstack_image_embeds=deepstack_image_embeds, lambda_decay=lambda_decay)
             else:
                 output = model(batch)
             preds, batch = output.ress, output.views
@@ -75,7 +76,7 @@ def loss_of_one_batch(
             return result
         else:
             if point3r_tag:
-                output = model(batch, point3r_tag=True, image_embeds=image_embeds, grid_thw_images=grid_thw, deepstack_image_embeds=deepstack_image_embeds)
+                output = model(batch, point3r_tag=True, image_embeds=image_embeds, grid_thw_images=grid_thw, deepstack_image_embeds=deepstack_image_embeds, lambda_decay=lambda_decay)
             else:
                 output = model(batch)
             preds, batch = output.ress, output.views
@@ -87,7 +88,7 @@ def loss_of_one_batch(
     return result
 
 @torch.no_grad()
-def inference(groups, model, device, image_embeds=None, grid_thw=None, deepstack_image_embeds=None, verbose=True):
+def inference(groups, model, device, image_embeds=None, grid_thw=None, deepstack_image_embeds=None, verbose=True, lambda_decay=1.0):
     ignore_keys = set(
         ["depthmap", "dataset", "label", "instance", "idx", "true_shape", "rng"]
     )
@@ -112,7 +113,8 @@ def inference(groups, model, device, image_embeds=None, grid_thw=None, deepstack
         inference=True,
         image_embeds=image_embeds,
         grid_thw=grid_thw,
-        deepstack_image_embeds=deepstack_image_embeds
+        deepstack_image_embeds=deepstack_image_embeds,
+        lambda_decay=lambda_decay,
     )
     result = to_cpu(res)
     return result

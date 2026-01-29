@@ -733,6 +733,7 @@ class Point3R(CroCoNet):
         image_embeds_i=None,  # New image embeddings for current view
         deepstack_memory_aligned_embeds=None,  # Accumulated deepstack embeddings (list of per-layer embeds)
         deepstack_image_embeds_i=None,  # New deepstack embeddings for current view (list of per-layer embeds)
+        lambda_decay=1.0,  # EMA decay factor: updated = lambda * new + (1 - lambda) * old
         ):
         """
         Add memory tokens with spatial merging to avoid duplicate points.
@@ -847,7 +848,7 @@ class Point3R(CroCoNet):
                         image_feat_sum.index_add_(0, inverse_indices, image_feat_merge)
                         image_feat_avg = image_feat_sum / count
                         image_feat_avg = image_feat_avg.bfloat16()
-                        image_embeds_j[unique_indices] = image_feat_avg
+                        image_embeds_j[unique_indices] = lambda_decay * image_feat_avg + (1 - lambda_decay) * image_embeds_j[unique_indices]
 
                     # NEW: Apply same merge logic to deepstack embeddings (per layer)
                     if takes_deepstack:
@@ -859,7 +860,7 @@ class Point3R(CroCoNet):
                             ds_feat_sum.index_add_(0, inverse_indices, ds_feat_merge)
                             ds_feat_avg = ds_feat_sum / count
                             ds_feat_avg = ds_feat_avg.bfloat16()
-                            deepstack_embeds_j[layer_idx][unique_indices] = ds_feat_avg
+                            deepstack_embeds_j[layer_idx][unique_indices] = lambda_decay * ds_feat_avg + (1 - lambda_decay) * deepstack_embeds_j[layer_idx][unique_indices]
 
                 if mask_add.sum() > 0:
                     pos_add = img_pos_j[mask_add]
@@ -896,7 +897,7 @@ class Point3R(CroCoNet):
             # This matches the structure expected when indexing by layer then by batch
             return memory_feat_list, memory_pos_list, init_memory_feat_list, img_pos, image_embeds_list, deepstack_embeds_lists if takes_deepstack else None
 
-    def _forward_merge(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None):
+    def _forward_merge(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None, lambda_decay=1.0):
         shape, feat_ls, pos = self._encode_views(views)
         feat = feat_ls[-1]
         memory_feat, _ = self._init_memory(feat[0], pos[0])
@@ -1047,6 +1048,7 @@ class Point3R(CroCoNet):
                     image_embeds_i=img_emb_i,
                     deepstack_memory_aligned_embeds=deepstack_memory_aligned_embeds,
                     deepstack_image_embeds_i=deepstack_emb_i,
+                    lambda_decay=lambda_decay,
                 )
 
         return ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds
@@ -1129,13 +1131,14 @@ class Point3R(CroCoNet):
 
         return ress, views
 
-    def forward(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None):
+    def forward(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None, lambda_decay=1.0):
         ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds = self._forward_merge(
             views,
             point3r_tag=point3r_tag,
             image_embeds=image_embeds,
             grid_thw_images=grid_thw_images,
-            deepstack_image_embeds=deepstack_image_embeds
+            deepstack_image_embeds=deepstack_image_embeds,
+            lambda_decay=lambda_decay,
         )
         return ARCroco3DStereoOutput(
             ress=ress,

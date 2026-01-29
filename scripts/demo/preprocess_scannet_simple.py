@@ -35,13 +35,26 @@ def main():
     parser = argparse.ArgumentParser(description='Preprocess ScanNet scenes for a specific GPU')
     parser.add_argument('--gpu-id', type=int, required=True, help='GPU ID (0-indexed)')
     parser.add_argument('--total-gpus', type=int, required=True, help='Total number of GPUs')
+    parser.add_argument('--lambda-decay', type=float, default=1.0,
+                        help='EMA decay factor for embedding merge: updated = lambda * new + (1-lambda) * old (default: 1.0)')
+    parser.add_argument('--save-name', type=str, default=None,
+                        help='Output directory name under data/media/scannet/ (default: auto-generated from lambda value)')
     args = parser.parse_args()
 
     gpu_id = args.gpu_id
     total_gpus = args.total_gpus
+    lambda_decay = args.lambda_decay
+
+    # Determine save directory name
+    if args.save_name is not None:
+        save_name = args.save_name
+    elif lambda_decay == 1.0:
+        save_name = 'pointer_memory_qwen3vl'
+    else:
+        save_name = f'pointer_memory_qwen3vl_lambda{lambda_decay}'
 
     # Get all paths
-    input_image_paths, pointer_data_paths = setup_scannet_paths('pointer_memory_qwen3vl')
+    input_image_paths, pointer_data_paths = setup_scannet_paths(save_name)
 
     # Split data across GPUs
     total_scenes = len(input_image_paths)
@@ -73,7 +86,8 @@ def main():
             continue
         try:
             preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                              input_images_dir, pointer_data_path, use_viser=False, unload_point3r_model=False)
+                              input_images_dir, pointer_data_path, use_viser=False, unload_point3r_model=False,
+                              lambda_decay=lambda_decay)
         except Exception as e:
             print(f"\nFailed to process {input_images_dir}: {e}")
             continue

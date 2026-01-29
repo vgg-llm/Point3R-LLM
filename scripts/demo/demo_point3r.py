@@ -410,6 +410,7 @@ def preprocess_images(
         annotation_result = None,
         input_poses_dir = None,
         scannet_pth_path = None,
+        lambda_decay = 1.0,
     ):
 
     # Example 2: Using the model with pointer memory
@@ -541,7 +542,8 @@ def preprocess_images(
         use_viser=use_viser,
         annotation_result=annotation_result,
         scannet_pth_path=scannet_pth_path,
-        scannet_pose_paths=pose_paths
+        scannet_pose_paths=pose_paths,
+        lambda_decay=lambda_decay,
     )
 
     if unload_point3r_model:
