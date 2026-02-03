@@ -19,7 +19,7 @@ def setup_scannet_paths(save_name='pointer_memory'):
 
     posed_images_dir = base_dir / 'posed_images'
     input_image_paths = sorted([str(subfolder) for subfolder in posed_images_dir.iterdir() if subfolder.is_dir()])
-    input_image_paths = input_image_paths[::-1]
+    # input_image_paths = input_image_paths[::-1]
 
     pointer_memory_dir = base_dir / save_name
     pointer_memory_dir.mkdir(parents=True, exist_ok=True)
@@ -41,6 +41,8 @@ def main():
                         help='Output directory name under data/media/scannet/ (default: auto-generated from lambda value)')
     parser.add_argument('--sample-ct', type=int, default=32,
                         help='Number of images to uniformly sample per scene (default: 32)')
+    parser.add_argument('--model-path', type=str, default="Qwen/Qwen3-VL-4B-Instruct",
+                        help='Output directory name under data/media/scannet/ (default: auto-generated from lambda value)')
     args = parser.parse_args()
 
     gpu_id = args.gpu_id
@@ -55,28 +57,31 @@ def main():
         save_name = 'pointer_memory_qwen3vl'
     else:
         save_name = f'pointer_memory_qwen3vl_lambda{lambda_decay}'
+    
+    if "8B" in args.model_path:
+        save_name += "_8B"
 
     # Get all paths
     input_image_paths, pointer_data_paths = setup_scannet_paths(save_name)
 
     # Split data across GPUs
     total_scenes = len(input_image_paths)
-    scenes_per_gpu = (total_scenes + total_gpus - 1) // total_gpus
-    start_idx = gpu_id * scenes_per_gpu
-    end_idx = min(start_idx + scenes_per_gpu, total_scenes)
+    # scenes_per_gpu = (total_scenes + total_gpus - 1) // total_gpus
+    # start_idx = gpu_id * scenes_per_gpu
+    # end_idx = min(start_idx + scenes_per_gpu, total_scenes)
 
     # Get this GPU's subset
-    local_input_paths = input_image_paths[start_idx:end_idx]
-    local_output_paths = pointer_data_paths[start_idx:end_idx]
-    # local_input_paths = input_image_paths[gpu_id::total_gpus]
-    # local_output_paths = pointer_data_paths[gpu_id::total_gpus]
+    # local_input_paths = input_image_paths[start_idx:end_idx]
+    # local_output_paths = pointer_data_paths[start_idx:end_idx]
+    local_input_paths = input_image_paths[gpu_id::total_gpus]
+    local_output_paths = pointer_data_paths[gpu_id::total_gpus]
 
 
     print(f"GPU {gpu_id}/{total_gpus-1}: Processing {len(local_input_paths)} scenes")
     print(f"Total scenes in dataset: {total_scenes}")
 
     # Load models - will use CUDA_VISIBLE_DEVICES=X so it sees only one GPU as cuda:0
-    model, processor, min_pixels, max_pixels, point3r_model = load_models(device=None, model_path="Qwen/Qwen3-VL-4B-Instruct")
+    model, processor, min_pixels, max_pixels, point3r_model = load_models(device=None, model_path=args.model_path)
 
     # Process this GPU's subset with progress bar
     for input_images_dir, pointer_data_path in tqdm(

@@ -17,6 +17,7 @@ for gpu_id in $(seq 0 $((TOTAL_GPUS - 1))); do
         --total-gpus $TOTAL_GPUS \
         --lambda-decay $LAMBDA_DECAY \
         --sample-ct $SAMPLE_CT \
+        --model-path "Qwen/Qwen3-VL-8B-Instruct" \
         > logs/preprocess_gpu_${gpu_id}.log 2>&1 &
 done
 
