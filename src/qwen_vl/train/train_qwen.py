@@ -261,6 +261,65 @@ def train(attn_implementation="flash_attention_2"):
             # Pass RoPE config to model
             model.config.rope_mode = rope_mode
             model.config.rope_position_range = getattr(model_args, "rope_position_range", 128)
+        elif model_args.use_geometry_encoder:
+            from qwen_vl.model.qwen3_vl.modeling_qwen_vggt import Qwen3VLForConditionalGenerationWithVGGT
+
+            config = AutoConfig.from_pretrained(model_args.model_name_or_path)
+            if hasattr(config, "use_geometry_encoder") and config.use_geometry_encoder != model_args.use_geometry_encoder:
+                raise ValueError(
+                    "The use_geometry_encoder in config and model_args are not consistent. "
+                    "Please check the model config."
+                )
+
+            # Set geometry encoder config attributes
+            for k in [
+                "use_geometry_encoder",
+                "geometry_encoder_type",
+                "reference_frame",
+                "feature_fusion_method",
+                "fusion_num_layers",
+                "geometry_merger_type"
+            ]:
+                setattr(config, k, getattr(model_args, k))
+
+            # Add missing vision config attributes for Qwen3-VL compatibility
+            if hasattr(config, "vision_config"):
+                if not hasattr(config.vision_config, "fullatt_block_indexes"):
+                    depth = getattr(config.vision_config, "depth", 27)
+                    config.vision_config.fullatt_block_indexes = list(range(depth))
+                if not hasattr(config.vision_config, "window_size"):
+                    config.vision_config.window_size = 112
+
+            # Add missing text config attributes for Qwen3-VL compatibility
+            if hasattr(config, "text_config"):
+                num_hidden_layers = getattr(config.text_config, "num_hidden_layers", 32)
+                if not hasattr(config.text_config, "use_sliding_window"):
+                    config.text_config.use_sliding_window = False
+                if not hasattr(config.text_config, "sliding_window"):
+                    config.text_config.sliding_window = None
+                if not hasattr(config.text_config, "max_window_layers"):
+                    config.text_config.max_window_layers = num_hidden_layers
+                if not hasattr(config.text_config, "layer_types"):
+                    config.text_config.layer_types = ["full_attention"] * num_hidden_layers
+
+            print(f'config: {config}')
+
+            assert model_args.geometry_encoder_path is not None, \
+                "geometry_encoder_path must be set when use_geometry_encoder is True."
+
+            model = Qwen3VLForConditionalGenerationWithVGGT.from_pretrained(
+                pretrained_model_name_or_path=model_args.model_name_or_path,
+                config=config,
+                cache_dir=training_args.cache_dir,
+                attn_implementation=attn_implementation,
+                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                geometry_encoder_path=model_args.geometry_encoder_path
+            )
+
+            data_args.image_processor = AutoProcessor.from_pretrained(
+                model_args.model_name_or_path
+            ).image_processor
+            data_args.model_type = "qwen3vl"
         else:
             from transformers import Qwen3VLForConditionalGeneration
             model = Qwen3VLForConditionalGeneration.from_pretrained(
