@@ -12,6 +12,7 @@ import sys
 import os
 from pathlib import Path
 sys.path.insert(0, 'src')
+from natsort import natsorted
 
 from transformers import AutoProcessor
 from qwen_vl.model.point3r.point3r import Point3R
@@ -424,7 +425,7 @@ def preprocess_images(
 
     # Compute sorted list of JPG image paths
     p = Path(input_images_dir)
-    image_paths = sorted(list(p.glob("*.jpg")) + list(p.glob("*.jpeg")))
+    image_paths = natsorted(list(p.glob("*.jpg")) + list(p.glob("*.jpeg")))
     # Uniformly sample 32 paths
     
     if len(image_paths) > sample_ct:
