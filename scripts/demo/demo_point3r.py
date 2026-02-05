@@ -425,7 +425,7 @@ def preprocess_images(
 
     # Compute sorted list of JPG image paths
     p = Path(input_images_dir)
-    image_paths = natsorted(list(p.glob("*.jpg")) + list(p.glob("*.jpeg")))
+    image_paths = natsorted(list(p.glob("*.jpg")) + list(p.glob("*.jpeg")) + list(p.glob("*.png")) + list(p.glob("*.JPG")))
     # Uniformly sample 32 paths
     
     if len(image_paths) > sample_ct:
