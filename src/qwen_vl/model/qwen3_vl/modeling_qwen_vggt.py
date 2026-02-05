@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional, List, Tuple, Union
 
 from .modeling_qwen3_vl import Qwen3VLForConditionalGeneration, Qwen3VLCausalLMOutputWithPast
@@ -70,7 +71,8 @@ class Qwen3VLForConditionalGenerationWithVGGT(Qwen3VLForConditionalGeneration):
     def _process_geometry_features(
         self,
         image_embeds: torch.Tensor,
-        geometry_encoder_inputs: List[torch.Tensor]
+        geometry_encoder_inputs: List[torch.Tensor],
+        image_grid_thw: torch.LongTensor
     ) -> torch.Tensor:
         """Process geometry features using the geometry encoder.
 
@@ -79,6 +81,8 @@ class Qwen3VLForConditionalGenerationWithVGGT(Qwen3VLForConditionalGeneration):
                          Shape: (total_tokens, hidden_size) where total_tokens = sum of all image tokens
             geometry_encoder_inputs: List[Tensor] - raw images for each batch item
                                     Each tensor: (n_images, C, H, W)
+            image_grid_thw: Grid dimensions (T, H, W) for each image from Qwen3-VL
+                           Shape: (num_images, 3) - used to calculate target spatial dims
 
         Returns:
             Fused features: (total_tokens, hidden_size)
@@ -90,7 +94,7 @@ class Qwen3VLForConditionalGenerationWithVGGT(Qwen3VLForConditionalGeneration):
             if geometry_encoder_inputs[bn].shape[0] > 0:
                 n_image, _, height, width = geometry_encoder_inputs[bn].shape
 
-                # Encode geometry features using VGGT
+                # Encode geometry features using VGGT (patch_size=14)
                 # Output: (n_image, n_patches, feature_dim) where n_patches = (H/14) * (W/14)
                 features = self.geometry_encoder.encode(geometry_encoder_inputs[bn])
                 features = features.to(image_embeds.dtype)
@@ -100,24 +104,57 @@ class Qwen3VLForConditionalGenerationWithVGGT(Qwen3VLForConditionalGeneration):
                 w_patch = width // self.geometry_encoder.patch_size
                 features = features.reshape(n_image, h_patch, w_patch, -1)
 
-                # Apply merger to match dimensions
+                # Apply merger to match dimensions (spatial_merge_size=2)
                 # Output: (n_image, h_merged, w_merged, hidden_size)
                 features = self.geometry_merger(features)
                 geo_embeds_list.append(features)
 
-        # Concatenate all geometry embeddings
+        # Concatenate all geometry embeddings with spatial interpolation
         if geo_embeds_list:
-            geo_embeds = torch.cat(
-                [f.reshape(-1, f.shape[-1]) for f in geo_embeds_list],
-                dim=0
-            )
+            # Get spatial merge size from config
+            spatial_merge_size = self.config.vision_config.spatial_merge_size
 
-            # Fuse with visual embeddings
-            # Both tensors: (total_tokens, hidden_size)
-            # Reshape image_embeds to match geo_embeds spatial structure for fusion
-            image_embeds = image_embeds.view(geo_embeds.shape)
+            # Calculate target spatial dims from Qwen3-VL's grid_thw
+            # grid_thw contains (T, H_patches, W_patches) for each image
+            # After spatial merge: (H_patches / merge_size, W_patches / merge_size)
+            target_dims = []
+            for thw in image_grid_thw:
+                t, h, w = thw.tolist()
+                # Qwen3-VL outputs tokens after spatial merging
+                target_h = h // spatial_merge_size
+                target_w = w // spatial_merge_size
+                target_dims.append((t, target_h, target_w))
+
+            # Interpolate each batch's geo features to match Qwen3-VL dimensions
+            geo_embeds_interpolated = []
+            img_idx = 0
+            for bn, features in enumerate(geo_embeds_list):
+                n_image = features.shape[0]
+                for i in range(n_image):
+                    feat = features[i]  # (h_geo, w_geo, hidden)
+                    t, target_h, target_w = target_dims[img_idx]
+
+                    # Reshape for interpolation: (1, hidden, h_geo, w_geo)
+                    feat_for_interp = feat.permute(2, 0, 1).unsqueeze(0)
+
+                    # Interpolate to target Qwen3-VL dimensions
+                    feat_interp = F.interpolate(
+                        feat_for_interp.float(),
+                        size=(target_h, target_w),
+                        mode='bilinear',
+                        align_corners=False
+                    ).to(feat.dtype)
+
+                    # Reshape back: (target_h * target_w, hidden)
+                    feat_flat = feat_interp.squeeze(0).permute(1, 2, 0).reshape(-1, feat.shape[-1])
+                    geo_embeds_interpolated.append(feat_flat)
+                    img_idx += 1
+
+            # Concatenate all interpolated features
+            geo_embeds = torch.cat(geo_embeds_interpolated, dim=0)
+
+            # Fuse with visual embeddings (now same token count)
             image_embeds = self.feature_fusion(image_embeds, geo_embeds)
-            image_embeds = image_embeds.view(-1, image_embeds.shape[-1])
 
         return image_embeds
 
@@ -176,7 +213,7 @@ class Qwen3VLForConditionalGenerationWithVGGT(Qwen3VLForConditionalGeneration):
             if (getattr(self.config, 'use_geometry_encoder', False)
                 and geometry_encoder_inputs is not None):
                 image_embeds = self._process_geometry_features(
-                    image_embeds, geometry_encoder_inputs
+                    image_embeds, geometry_encoder_inputs, image_grid_thw
                 )
 
             # Get mask and scatter

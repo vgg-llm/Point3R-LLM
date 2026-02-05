@@ -733,8 +733,8 @@ class DataCollatorForSupervisedDataset(object):
         if "geometry_encoder_inputs" in instances[0]:
             geometry_encoder_inputs = [torch.stack(instance["geometry_encoder_inputs"]) for instance in instances]
             batch["geometry_encoder_inputs"] = geometry_encoder_inputs
-            assert len(set([instance["tag"] for instance in instances])) == 1, "all data in a batch should have the same tag"
-            batch["tag"] = instances[0]["tag"]
+            # assert len(set([instance["tag"] for instance in instances])) == 1, "all data in a batch should have the same tag"
+            # batch["tag"] = instances[0]["tag"]
 
         if "pointer_memory_embeds" in instances[0]:
             pointer_memory_embeds = [instance["pointer_memory_embeds"] for instance in instances]
