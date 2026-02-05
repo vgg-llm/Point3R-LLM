@@ -138,6 +138,14 @@ def main():
         args.num_pointer_tokens,
     )
 
+    # Evaluation set (test)
+    convert_split(
+        sqa3d_dir / "v1_balanced_questions_test_scannetv2.json",
+        sqa3d_dir / "v1_balanced_sqa_annotations_test_scannetv2.json",
+        base / "evaluation" / "sqa3d_point3r" / "test.json",
+        args.num_pointer_tokens,
+    )
+
 
 if __name__ == "__main__":
     main()

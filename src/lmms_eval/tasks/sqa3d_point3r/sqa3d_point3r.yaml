@@ -2,7 +2,7 @@ dataset_path: data/evaluation/sqa3d_point3r
 dataset_kwargs:
   token: True
 task: "sqa3d_point3r"
-test_split: val
+test_split: test
 output_type: generate_until
 doc_to_visual: !function utils.sqa3d_doc_to_visual
 doc_to_text: !function utils.sqa3d_doc_to_text
