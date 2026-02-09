@@ -140,7 +140,7 @@ def vstibench_process_results(doc, results):
 
     if question_type in MCA_QUESTION_TYPES:
         for key, value in METRICS_FOR_MCA.items():
-            doc[key] = eval(value)(fuzzy_matching(doc['prediction']), doc['ground_truth'])
+            doc[key] = eval(value)(fuzzy_matching(doc['prediction']), doc['mc_answer'])
     elif question_type in NA_QUESTION_TYPES:
         for key, value in METRICS_FOR_NA.items():
             try:
@@ -174,6 +174,32 @@ def vstibench_aggregate_results(results):
             for metric in METRICS_FOR_MCA.keys():
                 if metric in per_question_type.columns:
                     output[f"{question_type}_{metric}"] = per_question_type[metric].mean()
+
+    # Combine camera_obj_rel_dist variants
+    rel_dist_keys = [
+        'camera_obj_rel_dist_v1_accuracy',
+        'camera_obj_rel_dist_v2_accuracy',
+        'camera_obj_rel_dist_v3_accuracy',
+    ]
+    rel_dist_values = []
+    for key in rel_dist_keys:
+        if key in output:
+            rel_dist_values.append(output.pop(key))
+    if rel_dist_values:
+        output['camera_obj_rel_dist_accuracy'] = sum(rel_dist_values) / len(rel_dist_values)
+
+    # Combine obj_obj_relative_pos variants
+    rel_pos_keys = [
+        'obj_obj_relative_pos_lr_accuracy',
+        'obj_obj_relative_pos_nf_accuracy',
+        'obj_obj_relative_pos_ud_accuracy',
+    ]
+    rel_pos_values = []
+    for key in rel_pos_keys:
+        if key in output:
+            rel_pos_values.append(output.pop(key))
+    if rel_pos_values:
+        output['obj_obj_relative_pos_accuracy'] = sum(rel_pos_values) / len(rel_pos_values)
 
     # Compute overall score
     if output:
