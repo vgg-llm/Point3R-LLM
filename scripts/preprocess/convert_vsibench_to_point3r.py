@@ -128,6 +128,7 @@ def main():
     # Source files to process
     source_files = [
         "merged_qa_scannet_train.json",
+        "merged_qa_scannetpp_train.json",
         "merged_qa_route_plan_train.json",  # Contains scannet, scannetpp, arkitscenes
     ]
 
