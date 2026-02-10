@@ -3,7 +3,7 @@
 # Each task processes a different chunk of the dataset
 
 TOTAL_TASKS=16
-SAVE_NAME=${1:-"pointer_memory_qwen3vl"}
+SAVE_PATH=${1:-"./output/scannet"}
 SAMPLE_CT=${2:-32}
 
 echo "=============================================="
@@ -13,7 +13,7 @@ echo ""
 echo "Total scenes in dataset: 1513"
 echo "Tasks to launch: $TOTAL_TASKS"
 echo "Scenes per task: ~$(( (1513 + TOTAL_TASKS - 1) / TOTAL_TASKS ))"
-echo "Save name: $SAVE_NAME"
+echo "Save path: $SAVE_PATH"
 echo "Sample count: $SAMPLE_CT"
 echo ""
 
@@ -30,7 +30,7 @@ for task_id in $(seq 0 $((TOTAL_TASKS - 1))); do
            --partition=cms_cvlab \
            --gres=gpu:1 \
            --nodes=1 \
-           scripts/demo/slurm_preprocess_scannet_task.sh ${task_id} ${TOTAL_TASKS} ${SAVE_NAME} ${SAMPLE_CT}
+           scripts/demo/slurm_preprocess_scannet_task.sh ${task_id} ${TOTAL_TASKS} ${SAVE_PATH} ${SAMPLE_CT}
 done
 
 echo ""

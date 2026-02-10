@@ -13,7 +13,7 @@ from demo_point3r import load_models, preprocess_images
 from tqdm import tqdm
 import os
 
-def setup_scannet_paths(save_name='pointer_memory'):
+def setup_scannet_paths(save_path='./data/media/scannet/pointer_memory'):
     base_dir = Path('./data/media/scannet')
     base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -21,11 +21,11 @@ def setup_scannet_paths(save_name='pointer_memory'):
     input_image_paths = sorted([str(subfolder) for subfolder in posed_images_dir.iterdir() if subfolder.is_dir()])
     # input_image_paths = input_image_paths[::-1]
 
-    pointer_memory_dir = base_dir / save_name
-    pointer_memory_dir.mkdir(parents=True, exist_ok=True)
+    save_dir = Path(save_path)
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     pointer_data_paths = [
-        str(pointer_memory_dir / f"{Path(path).name}.pt")
+        str(save_dir / f"{Path(path).name}.pt")
         for path in input_image_paths
     ]
 
@@ -37,8 +37,8 @@ def main():
     parser.add_argument('--total-gpus', type=int, required=True, help='Total number of GPUs')
     parser.add_argument('--lambda-decay', type=float, default=1.0,
                         help='EMA decay factor for embedding merge: updated = lambda * new + (1-lambda) * old (default: 1.0)')
-    parser.add_argument('--save-name', type=str, default=None,
-                        help='Output directory name under data/media/scannet/ (default: auto-generated from lambda value)')
+    parser.add_argument('--save-path', type=str, default=None,
+                        help='Output directory path where preprocessed data will be saved (default: auto-generated from lambda value)')
     parser.add_argument('--sample-ct', type=int, default=32,
                         help='Number of images to uniformly sample per scene (default: 32)')
     parser.add_argument('--model-path', type=str, default="Qwen/Qwen3-VL-4B-Instruct",
@@ -50,19 +50,20 @@ def main():
     lambda_decay = args.lambda_decay
     sample_ct = args.sample_ct
 
-    # Determine save directory name
-    if args.save_name is not None:
-        save_name = args.save_name
-    elif lambda_decay == 1.0:
-        save_name = 'pointer_memory_qwen3vl'
+    # Determine save path
+    if args.save_path is not None:
+        save_path = args.save_path
     else:
-        save_name = f'pointer_memory_qwen3vl_lambda{lambda_decay}'
-    
-    if "8B" in args.model_path:
-        save_name += "_8B"
+        if lambda_decay == 1.0:
+            save_name = 'pointer_memory_qwen3vl'
+        else:
+            save_name = f'pointer_memory_qwen3vl_lambda{lambda_decay}'
+        if "8B" in args.model_path:
+            save_name += "_8B"
+        save_path = f'./data/media/scannet/{save_name}'
 
     # Get all paths
-    input_image_paths, pointer_data_paths = setup_scannet_paths(save_name)
+    input_image_paths, pointer_data_paths = setup_scannet_paths(save_path)
 
     # Split data across GPUs
     total_scenes = len(input_image_paths)

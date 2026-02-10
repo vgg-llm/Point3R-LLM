@@ -3,7 +3,7 @@
 
 TASK_ID=${1:-0}
 TOTAL_TASKS=${2:-1}
-SAVE_NAME=${3:-"pointer_memory_qwen3vl"}
+SAVE_PATH=${3:-"./output/scannet"}
 SAMPLE_CT=${4:-32}
 
 # Set working directory
@@ -21,7 +21,7 @@ CUDA_VISIBLE_DEVICES=0 python3 scripts/demo/preprocess_scannet_simple.py \
     --model-path "Qwen/Qwen3-VL-8B-Instruct" \
     --gpu-id $TASK_ID \
     --total-gpus $TOTAL_TASKS \
-    --save-name $SAVE_NAME \
+    --save-path $SAVE_PATH \
     --sample-ct $SAMPLE_CT
 
 
