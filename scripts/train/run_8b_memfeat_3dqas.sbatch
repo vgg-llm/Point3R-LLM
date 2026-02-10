@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=Point3R-LLM-train_point3r_qwen3vl_memfeat_3dqas
+#SBATCH --job-name=Point3R-LLM-train_point3r_qwen3vl_memfeat_3dqas_8b
 #SBATCH -o sbatch_log/pytorch-1gpu.%j.out # Name of stdout output file
-#SBATCH --partition=background,batch,cms_cvlab
+#SBATCH --partition=cms_cvlab
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1
 
