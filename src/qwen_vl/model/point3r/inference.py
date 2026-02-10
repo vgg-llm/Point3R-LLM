@@ -73,6 +73,9 @@ def loss_of_one_batch(
             # NEW: Include deepstack_memory_aligned_embeds in result
             if hasattr(output, 'deepstack_memory_aligned_embeds'):
                 result['deepstack_memory_aligned_embeds'] = output.deepstack_memory_aligned_embeds
+            # NEW: Include memory_aligned_timestamps in result
+            if hasattr(output, 'memory_aligned_timestamps'):
+                result['memory_aligned_timestamps'] = output.memory_aligned_timestamps
             return result
         else:
             if point3r_tag:

@@ -16,7 +16,9 @@ from .point3r import LocalMemory
 from .utils.geometry import geotrf
 import viser
 import viser.transforms as tf
-from typing import List
+from typing import List, Dict
+import matplotlib.cm as cm
+import time
 
 
 def prepare_images_for_point3r(image_inputs, target_size=(640, 480), crop_border=20):
@@ -243,6 +245,20 @@ def extract_pointer_memory(
             for i, layer in enumerate(deepstack_memory_aligned_embeds):
                 print(f"  - Layer {i}: {layer.shape}")
 
+    # Extract memory_aligned_timestamps from Point3R outputs
+    pointer_timestamps = None
+    if 'memory_aligned_timestamps' in outputs and outputs['memory_aligned_timestamps'] is not None:
+        memory_aligned_timestamps = outputs['memory_aligned_timestamps']
+        if isinstance(memory_aligned_timestamps, list):
+            memory_aligned_timestamps = memory_aligned_timestamps[-1]  # Take last batch element
+        if memory_aligned_timestamps.dim() == 2:
+            memory_aligned_timestamps = memory_aligned_timestamps[0]  # Remove batch dimension
+        pointer_timestamps = memory_aligned_timestamps.cpu()
+        if verbose:
+            print(f"Extracted memory_aligned_timestamps: {pointer_timestamps.shape[0]} tokens")
+            print(f"  - Timestamp range: [{pointer_timestamps.min().item()}, {pointer_timestamps.max().item()}]")
+            print(f"  - Unique timestamps: {pointer_timestamps.unique().tolist()}")
+
     # Extract pos_decode_memory from Point3R outputs
     if 'pos_decode_memory' in outputs and outputs['pos_decode_memory'] is not None:
         pos_decode_memory = outputs['pos_decode_memory']
@@ -287,6 +303,7 @@ def extract_pointer_memory(
         camera_poses = None  
 
     if use_viser:
+        viser_start_time = time.time()
         server = viser.ViserServer()
 
         if annotation_result is not None:
@@ -352,54 +369,110 @@ def extract_pointer_memory(
             align_pos = extrinsic_se3.translation()
             print('No annotation given.')
 
-        colors = []
-        pts_3ds = []
-        confs = []
+        # Store per-frame data for timestamp visualization
+        per_frame_data = []
+        num_frames = len(outputs['pred'])
 
         for idx, (pred, view) in enumerate(zip(outputs['pred'], outputs['views'])):
             pts_3d = get_pred_pts3d(None, pred, use_pose=True)
-            color = view['img'].permute(0, 2, 3, 1)
-            conf = pred['conf']
 
-            color = color.detach().cpu().numpy() * 255
-            color = color.astype(np.uint8)
-            pts_3d = pts_3d.detach().cpu().numpy().reshape(-1, 3)
-            color = color.reshape(-1, 3)
-            conf = conf.detach().cpu().numpy().reshape(-1)
+            # Original RGB image for frustum display (H, W, 3)
+            rgb_image = view['img'].permute(0, 2, 3, 1).squeeze(0)
+            rgb_image_np = (rgb_image.detach().cpu().numpy() * 255).astype(np.uint8)
 
-            colors.append(color)
-            pts_3ds.append(pts_3d)
-            confs.append(conf)
+            # Points and colors (NO quantile filtering for interpretability)
+            pts_3d_np = pts_3d.detach().cpu().numpy().reshape(-1, 3)
+            color_rgb = rgb_image_np.reshape(-1, 3)
 
-        colors = np.concatenate(colors, axis=0)
-        pts_3ds = np.concatenate(pts_3ds, axis=0)
-        confs = np.concatenate(confs, axis=0)
+            # Viridis color for this frame's points
+            norm_idx = idx / max(num_frames - 1, 1)
+            viridis_rgba = cm.viridis(norm_idx)
+            color_timestamp = np.full_like(color_rgb, (np.array(viridis_rgba[:3]) * 255).astype(np.uint8))
 
-        quantile = np.quantile(confs, 0.10)
-        mask = confs > quantile
-        pts_3ds = pts_3ds[mask]
-        colors = colors[mask]
+            per_frame_data.append({
+                'pts_3d': pts_3d_np,
+                'colors_rgb': color_rgb,
+                'colors_timestamp': color_timestamp,
+                'rgb_image': rgb_image_np,
+                'frame_idx': idx,
+            })
 
-        # center = np.mean(pts_3ds, axis=0, keepdims=True)
-        # pts_3ds = pts_3ds - center
+        # === GUI Controls ===
+        with server.gui.add_folder("Playback"):
+            gui_timestep = server.gui.add_slider("Timestep", min=0, max=num_frames-1, step=1, initial_value=num_frames-1)
+            gui_next_frame = server.gui.add_button("Next Frame")
+            gui_prev_frame = server.gui.add_button("Prev Frame")
+            gui_playing = server.gui.add_checkbox("Playing", False)
+            gui_framerate = server.gui.add_slider("FPS", min=0.5, max=10, step=0.1, initial_value=1)
+            gui_accumulative = server.gui.add_checkbox("Accumulative Mode", True)
+            gui_stride = server.gui.add_slider("Stride", min=1, max=max(num_frames, 1), step=1, initial_value=1)
 
-        server.scene.add_point_cloud(
-            name=f"cloud",
-            points=pts_3ds,
-            colors=colors,
-            point_size=0.001,
-            visible=True,
-            wxyz=align_wxyz,
-            position=align_pos
-        )
+        with server.gui.add_folder("Visualization"):
+            gui_color_mode = server.gui.add_dropdown("Color Mode", options=["Original RGB", "Timestamp (viridis)"], initial_value="Original RGB")
+            gui_show_frustums = server.gui.add_checkbox("Show Frustums", True)
+            gui_point_size = server.gui.add_slider("Point Size", min=0.0005, max=0.01, step=0.0005, initial_value=0.001)
+            gui_frustum_scale = server.gui.add_slider("Frustum Scale", min=0.01, max=0.2, step=0.01, initial_value=0.05)
 
-        server.scene.add_point_cloud(
-            name=f"cloud (camera_aligned)",
-            points=pts_3ds,
-            colors=colors,
-            point_size=0.001,
-            visible=False,
-        )
+        # Create parent frame for all timesteps
+        server.scene.add_frame("/frames", show_axes=False, wxyz=align_wxyz, position=align_pos)
+
+        frame_nodes: List[viser.FrameHandle] = []
+        point_cloud_handles: Dict[int, Dict[str, any]] = {}
+        frustum_handles: List[viser.CameraFrustumHandle] = []
+
+        for frame_data in per_frame_data:
+            idx = frame_data['frame_idx']
+
+            # Frame node for this timestep
+            frame_node = server.scene.add_frame(f"/frames/t{idx}", show_axes=False)
+            frame_nodes.append(frame_node)
+
+            # Point cloud with RGB colors
+            pc_rgb = server.scene.add_point_cloud(
+                name=f"/frames/t{idx}/points_rgb",
+                points=frame_data['pts_3d'],
+                colors=frame_data['colors_rgb'],
+                point_size=gui_point_size.value,
+                point_shape="rounded",
+                visible=True,
+            )
+
+            # Point cloud with timestamp colors (initially hidden)
+            pc_timestamp = server.scene.add_point_cloud(
+                name=f"/frames/t{idx}/points_timestamp",
+                points=frame_data['pts_3d'],
+                colors=frame_data['colors_timestamp'],
+                point_size=gui_point_size.value,
+                point_shape="rounded",
+                visible=False,
+            )
+
+            point_cloud_handles[idx] = {'rgb': pc_rgb, 'timestamp': pc_timestamp}
+
+            # Camera frustum with RGB image and viridis-colored edge
+            if camera_poses is not None:
+                pose = camera_poses[idx].numpy()
+                pose_se3 = extrinsic_se3 @ tf.SE3(np.concatenate([pose[3:], pose[:3]]))
+
+                norm_idx = idx / max(num_frames - 1, 1)
+                frustum_color = tuple((np.array(cm.viridis(norm_idx)[:3]) * 255).astype(int))
+
+                h, w = frame_data['rgb_image'].shape[:2]
+                fy = 1.1 * h
+                fov = 2 * np.arctan2(h / 2, fy)
+
+                frustum = server.scene.add_camera_frustum(
+                    f"/frames/t{idx}/frustum",
+                    fov=fov,
+                    aspect=w / h,
+                    scale=gui_frustum_scale.value,
+                    image=frame_data['rgb_image'],
+                    line_width=2.0,
+                    color=frustum_color,
+                    position=pose_se3.translation(),
+                    wxyz=pose_se3.rotation().wxyz,
+                )
+                frustum_handles.append(frustum)
         
 
         server.scene.add_point_cloud(
@@ -413,29 +486,6 @@ def extract_pointer_memory(
 
         )
 
-        frustums: List[viser.CameraFrustumHandle] = []
-        poses = camera_poses.numpy()
-        for i, pose in enumerate(poses):
-            pose_se3 = extrinsic_se3 @ tf.SE3(np.concatenate([pose[3:],pose[:3]]))
-            
-            h, w = 480, 640
-            fy = 1.1 * h
-            fov = 2 * np.arctan2(h / 2, fy)
-            frustum_cam = server.scene.add_camera_frustum(
-                f"camera_{i}", fov=fov, aspect=w / h, scale=0.05, image=None, line_width=1.0,
-                position=pose_se3.translation(), wxyz=pose_se3.rotation().wxyz, color=(100, 255, 100) # light green
-            )
-            frustums.append(frustum_cam)
-        # pose_positions = poses[:,:3]
-        # if pose_positions.shape[0] > 1:
-        #     server.scene.add_spline_catmull_rom(
-        #         name=f"camera_trajectory",
-        #         curve_type="catmullrom",
-        #         points=pose_positions,
-        #         color=(0, 0, 200),
-        #         visible=True
-        #     )
-        
         # Visualize annotation data if provided
         point_array = np.array([[0, 0, 0]])
         if annotation_result is not None:
@@ -526,7 +576,71 @@ def extract_pointer_memory(
             else:
                 print(f"Warning: ScanNet GT path not found: {scannet_pth_path}")
 
-        input("Press Enter to move on...")
+        # === Event Handlers ===
+        def update_frame_visibility():
+            """Update frame visibility based on current mode and timestep."""
+            current = gui_timestep.value
+            stride = gui_stride.value
+            with server.atomic():
+                for i, frame_node in enumerate(frame_nodes):
+                    if gui_accumulative.value:
+                        # Progressive: show frames 0 to current with stride
+                        frame_node.visible = (i <= current) and (i % stride == 0)
+                    else:
+                        # Playback: show only current frame
+                        frame_node.visible = (i == current)
+            server.flush()
+
+        @gui_next_frame.on_click
+        def _(_):
+            gui_timestep.value = (gui_timestep.value + 1) % num_frames
+
+        @gui_prev_frame.on_click
+        def _(_):
+            gui_timestep.value = (gui_timestep.value - 1) % num_frames
+
+        @gui_timestep.on_update
+        def _(_):
+            update_frame_visibility()
+
+        @gui_accumulative.on_update
+        def _(_):
+            update_frame_visibility()
+
+        @gui_stride.on_update
+        def _(_):
+            update_frame_visibility()
+
+        @gui_color_mode.on_update
+        def _(_):
+            use_timestamp = (gui_color_mode.value == "Timestamp (viridis)")
+            with server.atomic():
+                for idx in point_cloud_handles:
+                    point_cloud_handles[idx]['rgb'].visible = not use_timestamp
+                    point_cloud_handles[idx]['timestamp'].visible = use_timestamp
+            server.flush()
+
+        @gui_show_frustums.on_update
+        def _(_):
+            with server.atomic():
+                for frustum in frustum_handles:
+                    frustum.visible = gui_show_frustums.value
+
+        # Initialize visibility
+        update_frame_visibility()
+
+        print(f"\nViser server running at: http://localhost:8080")
+        print("Press Ctrl+C to stop visualization and continue...")
+
+        try:
+            while True:
+                if gui_playing.value:
+                    gui_timestep.value = (gui_timestep.value + 1) % num_frames
+                time.sleep(1.0 / gui_framerate.value)
+        except KeyboardInterrupt:
+            viser_elapsed = time.time() - viser_start_time
+            print(f"\nVisualization stopped after {viser_elapsed:.2f} seconds")
+            print(f"(Subtract this from total preprocessing time for actual processing time)")
 
     if verbose:
         print(f"Extracted pointer memory:")
@@ -556,6 +670,10 @@ def extract_pointer_memory(
     # Add deepstack_image_embeds if available
     if deepstack_memory_aligned_embeds is not None:
         result['deepstack_image_embeds'] = deepstack_memory_aligned_embeds
+
+    # Add pointer_timestamps if available
+    if pointer_timestamps is not None:
+        result['pointer_timestamps'] = pointer_timestamps
 
     return result
 

@@ -436,7 +436,7 @@ def preprocess_images(
     pose_paths = None
     if input_poses_dir is not None:
         poses_p = Path(input_poses_dir)
-        pose_paths = sorted(list(poses_p.glob("*.txt")))
+        pose_paths = natsorted(list(poses_p.glob("*.txt")))
         if len(pose_paths) > 0:
             print(f"Found {len(pose_paths)} pose files in {input_poses_dir}")
         else:
@@ -548,6 +548,21 @@ def preprocess_images(
         lambda_decay=lambda_decay,
     )
 
+    # Log timestamp statistics for testing
+    if 'pointer_timestamps' in pointer_data:
+        timestamps = pointer_data['pointer_timestamps']
+        print(f"\n[Timestamp Tracking]")
+        print(f"  - Total tokens: {timestamps.shape[0]}")
+        print(f"  - Timestamp range: [{timestamps.min().item()}, {timestamps.max().item()}]")
+        print(f"  - Unique timestamps: {timestamps.unique().tolist()}")
+        # Show distribution per timestamp
+        print(f"tokens count: ", end="")
+        for ts in timestamps.unique().tolist():
+            count = (timestamps == ts).sum().item()
+            # print(f"  - Frame {ts}: {count} tokens")
+            print(count, end=", ")
+        print()
+
     if unload_point3r_model:
         # Free up GPU memory by unloading Point3R model
         print("Unloading Point3R model to free GPU memory...")
@@ -632,7 +647,7 @@ def run_models(model,
             pointer_memory_embeds=pointer_memory_embeds,
             pointer_positions=pointer_positions,
             deepstack_pointer_embeds=deepstack_pointer_embeds,
-            max_new_tokens=256,
+            max_new_tokens=1024,
             do_sample=True,
         )
 
@@ -1138,14 +1153,15 @@ if __name__=='__main__':
     # Example 3: Preprocess images and run inference (original demo)
     # input_images_dir = "./data/demo_data/sample_data"
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
-    input_images_dir = "./data/media/scannet/posed_images/scene0284_00"
-    pointer_data_path = "./data/demo_data/scene0284_00.pt"
+    input_images_dir = "./data/media/scannet/posed_images/scene0000_00"
+    pointer_data_path = "./data/demo_data/scene0000_00.pt"
     
     # query = "Describe this image."
     query = "Describe this scene."
     model_path="Qwen/Qwen3-VL-4B-Instruct"
     use_viser = False
+    sample_ct = 512
     model, processor, min_pixels, max_pixels, point3r_model = load_models(model_path=model_path)
     preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                      input_images_dir, pointer_data_path, use_viser)
+                      input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct)
     run_models(model, processor, pointer_data_path, query)

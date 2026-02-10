@@ -56,6 +56,7 @@ class ARCroco3DStereoOutput(ModelOutput):
     pos_decode_memory: Optional[torch.Tensor] = None
     memory_feat: Optional[torch.Tensor] = None
     deepstack_memory_aligned_embeds: Optional[List[torch.Tensor]] = None
+    memory_aligned_timestamps: Optional[torch.Tensor] = None
 
 def strip_module(state_dict):
     """
@@ -489,13 +490,29 @@ class Point3R(CroCoNet):
             self.downstream_head, activate=landscape_only
         )
 
-    def _encode_image(self, image, true_shape):
-        x, pos = self.patch_embed(image, true_shape=true_shape)
-        assert self.enc_pos_embed is None
-        for blk in self.enc_blocks:
-            x = blk(x, pos)
-        x = self.enc_norm(x)
-        return [x], pos, None
+    def _encode_image(self, image, true_shape, sub_batch_size=64):
+        n = image.shape[0]
+        if n <= sub_batch_size:
+            x, pos = self.patch_embed(image, true_shape=true_shape)
+            assert self.enc_pos_embed is None
+            for blk in self.enc_blocks:
+                x = blk(x, pos)
+            x = self.enc_norm(x)
+            return [x], pos, None
+
+        # Process in sub-batches to avoid OOM on large image counts
+        all_x, all_pos = [], []
+        for i in range(0, n, sub_batch_size):
+            chunk_img = image[i:i + sub_batch_size]
+            chunk_shape = true_shape[i:i + sub_batch_size]
+            x, pos = self.patch_embed(chunk_img, true_shape=chunk_shape)
+            assert self.enc_pos_embed is None
+            for blk in self.enc_blocks:
+                x = blk(x, pos)
+            x = self.enc_norm(x)
+            all_x.append(x)
+            all_pos.append(pos)
+        return [torch.cat(all_x, dim=0)], torch.cat(all_pos, dim=0), None
 
     def _encode_views(self, views, img_mask=None):
         device = views[0]["img"].device
@@ -625,16 +642,16 @@ class Point3R(CroCoNet):
         """
         Interpolate Qwen's image embeddings to match Point3R's patch grid.
 
-        Qwen processes images at patch_size=14, then applies 2x2 spatial merge.
-        For a 448x448 image:
-        - Initial patches: 32x32 (448/14)
-        - After 2x2 merge: 16x16
+        Qwen3-VL: patch_size=16, spatial_merge_size=2 -> effective stride 32px.
+        Qwen2.5-VL: patch_size=14, spatial_merge_size=2 -> effective stride 28px.
+        Point3R: patch_size=16 -> stride 16px.
 
-        Point3R works at 16x16 patch grid (448/16 = 28 patches per side, then downsampled to 14).
-        We need to interpolate from Qwen's merged grid to Point3R's grid.
+        We bilinearly interpolate from Qwen's merged grid to Point3R's target grid.
+        When all images share the same grid dimensions (common case), this is done
+        as a single batched operation for efficiency.
 
         Args:
-            image_embeds: (num_patches_total, embed_dim) where num_patches_total = sum(H*W for each image)
+            image_embeds: (num_patches_total, embed_dim) concatenated across images
             grid_thw: (num_images, 3) containing [temporal, height, width] BEFORE merge
             target_shape: (target_h, target_w) - Point3R's expected grid size
 
@@ -644,45 +661,58 @@ class Point3R(CroCoNet):
         import torch.nn.functional as F
 
         bs = grid_thw.shape[0]
-        # Get embedding dimension from input instead of hardcoding
-        print(f'Qwen initial embeddings: {image_embeds.shape}')
         embed_dim = image_embeds.shape[-1]
-
-        # Split image_embeds by image using grid_thw
-        # grid_thw contains [T, H, W] where H and W are BEFORE the 2x2 merge
-        # After merge, each image has (H//2 * W//2) patches
+        target_h, target_w = target_shape
         spatial_merge_size = 2
-        patches_per_image = (grid_thw[:, 1] // spatial_merge_size) * (grid_thw[:, 2] // spatial_merge_size)
 
-        # Split the concatenated embeddings back into per-image embeddings
-        image_embeds_list = torch.split(image_embeds, patches_per_image.tolist(), dim=0)
+        # Compute post-merge grid dimensions per image
+        h_merged = grid_thw[:, 1] // spatial_merge_size
+        w_merged = grid_thw[:, 2] // spatial_merge_size
 
-        interpolated_list = []
-        for i, img_embeds in enumerate(image_embeds_list):
-            # Current shape: (h_qwen * w_qwen, embed_dim)
-            h_qwen = grid_thw[i, 1].item() // spatial_merge_size
-            w_qwen = grid_thw[i, 2].item() // spatial_merge_size
+        # Fast path: all images share the same grid dimensions (common case)
+        if (h_merged == h_merged[0]).all() and (w_merged == w_merged[0]).all():
+            h_qwen = h_merged[0].item()
+            w_qwen = w_merged[0].item()
 
-            # Reshape to spatial grid: (1, embed_dim, h_qwen, w_qwen)
-            img_embeds_spatial = img_embeds.permute(1, 0).reshape(1, embed_dim, h_qwen, w_qwen)
+            # Reshape all images at once: (bs*h*w, C) -> (bs, h, w, C) -> (bs, C, h, w)
+            embeds_spatial = image_embeds.reshape(bs, h_qwen, w_qwen, embed_dim).permute(0, 3, 1, 2)
 
-            # Interpolate to Point3R grid size
-            target_h, target_w = target_shape
+            # Single batched interpolation
             interpolated_spatial = F.interpolate(
-                img_embeds_spatial,
+                embeds_spatial,
                 size=(target_h, target_w),
                 mode='bilinear',
                 align_corners=False
             )
 
-            # Reshape back: (1, embed_dim, target_h, target_w) -> (target_h * target_w, embed_dim)
-            interpolated_flat = interpolated_spatial.reshape(embed_dim, -1).permute(1, 0)
+            # (bs, C, th, tw) -> (bs, th*tw, C)
+            return interpolated_spatial.reshape(bs, embed_dim, -1).permute(0, 2, 1)
 
-            interpolated_list.append(interpolated_flat)
+        # Slow path: mixed resolutions - process per-image
+        patches_per_image = (h_merged * w_merged).tolist()
+        image_embeds_list = torch.split(image_embeds, patches_per_image, dim=0)
 
-        # Stack to (bs, target_h * target_w, embed_dim)
-        interpolated = torch.stack(interpolated_list, dim=0)
-        return interpolated
+        interpolated_list = []
+        for i, img_embeds in enumerate(image_embeds_list):
+            h_q = h_merged[i].item()
+            w_q = w_merged[i].item()
+
+            # (h*w, C) -> (1, h, w, C) -> (1, C, h, w)
+            embeds_spatial = img_embeds.reshape(1, h_q, w_q, embed_dim).permute(0, 3, 1, 2)
+
+            interpolated_spatial = F.interpolate(
+                embeds_spatial,
+                size=(target_h, target_w),
+                mode='bilinear',
+                align_corners=False
+            )
+
+            # (1, C, th, tw) -> (th*tw, C)
+            interpolated_list.append(
+                interpolated_spatial.reshape(embed_dim, -1).permute(1, 0)
+            )
+
+        return torch.stack(interpolated_list, dim=0)
 
     def _forward_addmemory(
         self,
@@ -733,6 +763,7 @@ class Point3R(CroCoNet):
         image_embeds_i=None,  # New image embeddings for current view
         deepstack_memory_aligned_embeds=None,  # Accumulated deepstack embeddings (list of per-layer embeds)
         deepstack_image_embeds_i=None,  # New deepstack embeddings for current view (list of per-layer embeds)
+        memory_aligned_timestamps=None,  # Accumulated timestamps for each memory token
         lambda_decay=1.0,  # EMA decay factor: updated = lambda * new + (1 - lambda) * old
         ):
         """
@@ -752,6 +783,7 @@ class Point3R(CroCoNet):
             image_embeds_i: New Qwen image embeddings for current view [bs, num_patches, embed_dim]
             deepstack_memory_aligned_embeds: Accumulated deepstack embeddings (list of per-layer embeds)
             deepstack_image_embeds_i: New deepstack embeddings for current view (list of per-layer embeds)
+            memory_aligned_timestamps: Accumulated timestamps for each memory token (frame index when last updated)
 
         Returns:
             memory_feat: Updated memory features
@@ -760,6 +792,7 @@ class Point3R(CroCoNet):
             img_pos: Downsampled 3D positions from current view
             memory_aligned_image_embeds: Updated image embeddings aligned with memory
             deepstack_memory_aligned_embeds: Updated deepstack embeddings aligned with memory
+            memory_aligned_timestamps: Updated timestamps for each memory token
         """
         bs, img_h, img_w, _ = pts3d.shape
         img_pos_len_h = img_h // 16
@@ -782,6 +815,9 @@ class Point3R(CroCoNet):
             memory_aligned_image_embeds = image_embeds_i
             # NEW: Initialize deepstack_memory_aligned_embeds
             deepstack_memory_aligned_embeds = deepstack_image_embeds_i
+            # NEW: Initialize memory_aligned_timestamps to 0 for all tokens
+            num_tokens = memory_add.shape[1]  # (bs, num_tokens, dim)
+            memory_aligned_timestamps = torch.zeros(bs, num_tokens, dtype=torch.long, device=memory_add.device)
         else:
             len_unit = 20
             memory_feat_list = []
@@ -792,6 +828,8 @@ class Point3R(CroCoNet):
             takes_deepstack = deepstack_image_embeds_i is not None and deepstack_memory_aligned_embeds is not None
             num_deepstack_layers = len(deepstack_image_embeds_i) if takes_deepstack else 0
             deepstack_embeds_lists = [[] for _ in range(num_deepstack_layers)]  # List of lists, one per layer
+            # NEW: Track timestamps per batch
+            timestamps_list = []
 
             takes_image_embeds = image_embeds_i is not None and memory_aligned_image_embeds is not None
 
@@ -812,6 +850,9 @@ class Point3R(CroCoNet):
                 if takes_deepstack:
                     deepstack_embeds_j = [layer_embeds[j] for layer_embeds in deepstack_memory_aligned_embeds]
                     new_deepstack_embeds_j = [layer_embeds[j] for layer_embeds in deepstack_image_embeds_i]
+
+                # NEW: Extract timestamps for batch j
+                timestamps_j = memory_aligned_timestamps[j]
 
                 # Compute adaptive threshold based on point cloud extent
                 unit_j = (torch.cat((memory_pos_j, img_pos_j), dim=0).max(dim=0).values - torch.cat((memory_pos_j, img_pos_j), dim=0).min(dim=0).values) / len_unit
@@ -862,6 +903,9 @@ class Point3R(CroCoNet):
                             ds_feat_avg = ds_feat_avg.bfloat16()
                             deepstack_embeds_j[layer_idx][unique_indices] = lambda_decay * ds_feat_avg + (1 - lambda_decay) * deepstack_embeds_j[layer_idx][unique_indices]
 
+                    # NEW: Update timestamps for merged tokens to current frame index
+                    timestamps_j[unique_indices] = i
+
                 if mask_add.sum() > 0:
                     pos_add = img_pos_j[mask_add]
                     feat_add = new_feat_j[mask_add]
@@ -879,6 +923,11 @@ class Point3R(CroCoNet):
                             ds_feat_add = new_deepstack_embeds_j[layer_idx][mask_add]
                             deepstack_embeds_j[layer_idx] = torch.cat([deepstack_embeds_j[layer_idx], ds_feat_add], dim=0)
 
+                    # NEW: Add timestamps for new tokens (set to current frame index)
+                    num_new_tokens = mask_add.sum().item()
+                    new_timestamps = torch.full((num_new_tokens,), i, dtype=torch.long, device=timestamps_j.device)
+                    timestamps_j = torch.cat([timestamps_j, new_timestamps], dim=0)
+
                 memory_feat_list.append(memory_feat_j)
                 memory_pos_list.append(memory_pos_j)
                 # NEW: Track image embeddings
@@ -888,14 +937,16 @@ class Point3R(CroCoNet):
                 if takes_deepstack:
                     for layer_idx in range(num_deepstack_layers):
                         deepstack_embeds_lists[layer_idx].append(deepstack_embeds_j[layer_idx])
+                # NEW: Track timestamps
+                timestamps_list.append(timestamps_j)
             init_memory_feat_list = [memory_feat_index.clone().detach() for memory_feat_index in memory_feat_list]
 
         if i == 0:
-            return memory_feat, chosen_pts, init_memory_feat, img_pos, memory_aligned_image_embeds, deepstack_memory_aligned_embeds
+            return memory_feat, chosen_pts, init_memory_feat, img_pos, memory_aligned_image_embeds, deepstack_memory_aligned_embeds, memory_aligned_timestamps
         else:
             # Note: deepstack_embeds_lists is a list of lists: [[batch0_layer0, batch1_layer0, ...], [batch0_layer1, ...], ...]
             # This matches the structure expected when indexing by layer then by batch
-            return memory_feat_list, memory_pos_list, init_memory_feat_list, img_pos, image_embeds_list, deepstack_embeds_lists if takes_deepstack else None
+            return memory_feat_list, memory_pos_list, init_memory_feat_list, img_pos, image_embeds_list, deepstack_embeds_lists if takes_deepstack else None, timestamps_list
 
     def _forward_merge(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None, lambda_decay=1.0):
         shape, feat_ls, pos = self._encode_views(views)
@@ -911,6 +962,8 @@ class Point3R(CroCoNet):
         memory_aligned_image_embeds = None
         # NEW: Initialize deepstack_memory_aligned_embeds (list of per-layer accumulated embeddings)
         deepstack_memory_aligned_embeds = None
+        # NEW: Initialize memory_aligned_timestamps
+        memory_aligned_timestamps = None
         # NEW: interpolate QWEN image embedding for the Point3R
         if image_embeds is not None and grid_thw_images is not None:
             img_h, img_w = shape[0][0].tolist()  # Get height and width from first view's shape
@@ -1035,7 +1088,7 @@ class Point3R(CroCoNet):
                         pos_decode_memory = pos_decode_memory.clone().detach()
                     else:
                         pos_decode_memory = [pos_decode_memory_in.clone().detach() for pos_decode_memory_in in pos_decode_memory]
-                memory_feat, pos_decode_memory, init_memory_feat, pos_decode_img, memory_aligned_image_embeds, deepstack_memory_aligned_embeds = self._forward_addmemory_merge(
+                memory_feat, pos_decode_memory, init_memory_feat, pos_decode_img, memory_aligned_image_embeds, deepstack_memory_aligned_embeds, memory_aligned_timestamps = self._forward_addmemory_merge(
                     i,
                     pts3d=this_pts3d,
                     init_memory_feat=init_memory_feat,
@@ -1048,10 +1101,11 @@ class Point3R(CroCoNet):
                     image_embeds_i=img_emb_i,
                     deepstack_memory_aligned_embeds=deepstack_memory_aligned_embeds,
                     deepstack_image_embeds_i=deepstack_emb_i,
+                    memory_aligned_timestamps=memory_aligned_timestamps,
                     lambda_decay=lambda_decay,
                 )
 
-        return ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds
+        return ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds, memory_aligned_timestamps
 
     def _forward(self, views, point3r_tag=False):
         shape, feat_ls, pos = self._encode_views(views)
@@ -1132,7 +1186,7 @@ class Point3R(CroCoNet):
         return ress, views
 
     def forward(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None, lambda_decay=1.0):
-        ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds = self._forward_merge(
+        ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds, memory_aligned_timestamps = self._forward_merge(
             views,
             point3r_tag=point3r_tag,
             image_embeds=image_embeds,
@@ -1146,7 +1200,8 @@ class Point3R(CroCoNet):
             memory_aligned_image_embeds=memory_aligned_image_embeds,
             pos_decode_memory=pos_decode_memory,
             memory_feat=memory_feat,
-            deepstack_memory_aligned_embeds=deepstack_memory_aligned_embeds
+            deepstack_memory_aligned_embeds=deepstack_memory_aligned_embeds,
+            memory_aligned_timestamps=memory_aligned_timestamps
         )
         # stage1
         # ress, views = self._forward(views, point3r_tag=point3r_tag)
