@@ -4,6 +4,7 @@
 TASK_ID=${1:-0}
 TOTAL_TASKS=${2:-1}
 SAVE_PATH=${3:-"./output/scannetpp"}
+SAMPLE_CT=${4:-32}
 
 # Set working directory
 cd /cms_cvlab/home/chanyoung/yoonwoo/Point3R-LLM
@@ -20,7 +21,8 @@ CUDA_VISIBLE_DEVICES=0 python3 scripts/demo/preprocess_scannetpp_simple.py \
     --model-path "Qwen/Qwen3-VL-8B-Instruct" \
     --curr_chunk $TASK_ID \
     --total_chunks $TOTAL_TASKS \
-    --save-path $SAVE_PATH
+    --save-path $SAVE_PATH \
+    --sample-ct $SAMPLE_CT
 
 
 echo "Preprocessing complete!"

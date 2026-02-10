@@ -3,7 +3,8 @@
 # Each task processes a different chunk of the dataset
 
 TOTAL_TASKS=16
-SAVE_PATH=${1:-"./output/arkit"}
+SAVE_PATH=${1:-"./output/arkitscenes"}
+SAMPLE_CT=${2:-32}
 
 echo "=============================================="
 echo "ARKitScenes Preprocessing - 16 Parallel Tasks"
@@ -13,6 +14,7 @@ echo "Total scenes in dataset: 348"
 echo "Tasks to launch: $TOTAL_TASKS"
 echo "Scenes per task: ~$(( (348 + TOTAL_TASKS - 1) / TOTAL_TASKS ))"
 echo "Save path: $SAVE_PATH"
+echo "Sample count: $SAMPLE_CT"
 echo ""
 
 # Create logs directory if it doesn't exist
@@ -28,7 +30,7 @@ for task_id in $(seq 0 $((TOTAL_TASKS - 1))); do
            --partition=cms_cvlab \
            --gres=gpu:1 \
            --nodes=1 \
-           scripts/demo/slurm_preprocess_arkit_task.sh ${task_id} ${TOTAL_TASKS} ${SAVE_PATH}
+           scripts/demo/slurm_preprocess_arkit_task.sh ${task_id} ${TOTAL_TASKS} ${SAVE_PATH} ${SAMPLE_CT}
 done
 
 echo ""

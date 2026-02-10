@@ -1,27 +1,27 @@
 #!/bin/bash
-# SLURM batch script for ARKitScenes preprocessing task
+# SLURM batch script for ScanNet preprocessing task
 
 TASK_ID=${1:-0}
 TOTAL_TASKS=${2:-1}
-SAVE_PATH=${3:-"./output/arkitscenes"}
+SAVE_NAME=${3:-"pointer_memory_qwen3vl"}
 SAMPLE_CT=${4:-32}
 
 # Set working directory
-cd /cms_cvlab/home/chanyoung/yoonwoo/Point3R-LLM
+cd /cms_cvlab/home/chanyoung/Point3R-LLM
 
 # Activate virtual environment
 echo "Activating virtual environment..."
 source venv/bin/activate
 
-echo "Starting ARKitScenes preprocessing on task $TASK_ID..."
+echo "Starting ScanNet preprocessing on task $TASK_ID..."
 echo "Python: $(which python3)"
 echo "Working directory: $(pwd)"
 
-CUDA_VISIBLE_DEVICES=0 python3 scripts/demo/preprocess_arkit_simple.py \
+CUDA_VISIBLE_DEVICES=0 python3 scripts/demo/preprocess_scannet_simple.py \
     --model-path "Qwen/Qwen3-VL-8B-Instruct" \
-    --curr_chunk $TASK_ID \
-    --total_chunks $TOTAL_TASKS \
-    --save-path $SAVE_PATH \
+    --gpu-id $TASK_ID \
+    --total-gpus $TOTAL_TASKS \
+    --save-name $SAVE_NAME \
     --sample-ct $SAMPLE_CT
 
 
