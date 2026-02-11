@@ -14,4 +14,5 @@ bash scripts/train/train_vstibench_qwen3vl_4b.sh
 bash scripts/evaluation/eval_vstibench_point3r_qwen3vl_4b.sh
 nvidia-smi
 date
-squeue --job $SLURM_JOBID   echo "##### END #####"
+squeue --job $SLURM_JOBID   
+echo "##### END #####"

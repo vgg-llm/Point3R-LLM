@@ -14,4 +14,5 @@ bash scripts/train/train_point3r_qwen3vl_cross_attn_fusion.sh
 bash scripts/evaluation/eval_3d_point3r_qwen3vl_cross_attn_fusion.sh
 nvidia-smi
 date
-squeue --job $SLURM_JOBID   echo "##### END #####"
+squeue --job $SLURM_JOBID   
+echo "##### END #####"
