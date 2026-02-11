@@ -413,6 +413,8 @@ def preprocess_images(
         scannet_pth_path = None,
         lambda_decay = 1.0,
         sample_ct = 32,
+        max_memory_tokens = None,
+        image_extensions = ("*.jpg", "*.jpeg", "*.png", "*.JPG"),
     ):
 
     # Example 2: Using the model with pointer memory
@@ -423,9 +425,9 @@ def preprocess_images(
     # stage 1, Image feature pre-processing runtime measurement
     stage1_start = time()
 
-    # Compute sorted list of JPG image paths
+    # Compute sorted list of image paths
     p = Path(input_images_dir)
-    image_paths = natsorted(list(p.glob("*.jpg")) + list(p.glob("*.jpeg")) + list(p.glob("*.png")) + list(p.glob("*.JPG")))
+    image_paths = natsorted([f for ext in image_extensions for f in p.glob(ext)])
     # Uniformly sample 32 paths
     
     if len(image_paths) > sample_ct:
@@ -546,6 +548,7 @@ def preprocess_images(
         scannet_pth_path=scannet_pth_path,
         scannet_pose_paths=pose_paths,
         lambda_decay=lambda_decay,
+        max_memory_tokens=max_memory_tokens,
     )
 
     # Log timestamp statistics for testing
@@ -1051,6 +1054,7 @@ def run_scan2cap(
                         unload_point3r_model=False,  # Keep model loaded for subsequent preprocessing
                         annotation_result=extract_box_and_coordinates_from_scan2cap(scan2cap_annotation_path),
                         scannet_pth_path=scannet_pth_path if use_viser else None,
+                        image_extensions=("*.jpg",),
                     )
 
                 except Exception as e:
@@ -1153,15 +1157,15 @@ if __name__=='__main__':
     # Example 3: Preprocess images and run inference (original demo)
     # input_images_dir = "./data/demo_data/sample_data"
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
-    input_images_dir = "./data/media/scannet/posed_images/scene0000_00"
-    pointer_data_path = "./data/demo_data/scene0000_00.pt"
+    input_images_dir = "./data/media/scannet/posed_images/scene0000_01"
+    pointer_data_path = "./data/demo_data/scene0000_01.pt"
     
     # query = "Describe this image."
     query = "Describe this scene."
     model_path="Qwen/Qwen3-VL-4B-Instruct"
-    use_viser = False
+    use_viser = True
     sample_ct = 512
     model, processor, min_pixels, max_pixels, point3r_model = load_models(model_path=model_path)
     preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                      input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct)
+                      input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=10000)
     run_models(model, processor, pointer_data_path, query)

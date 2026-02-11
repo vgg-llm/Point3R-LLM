@@ -765,6 +765,7 @@ class Point3R(CroCoNet):
         deepstack_image_embeds_i=None,  # New deepstack embeddings for current view (list of per-layer embeds)
         memory_aligned_timestamps=None,  # Accumulated timestamps for each memory token
         lambda_decay=1.0,  # EMA decay factor: updated = lambda * new + (1 - lambda) * old
+        max_memory_tokens=None,  # Maximum number of memory tokens before pruning
         ):
         """
         Add memory tokens with spatial merging to avoid duplicate points.
@@ -928,6 +929,20 @@ class Point3R(CroCoNet):
                     new_timestamps = torch.full((num_new_tokens,), i, dtype=torch.long, device=timestamps_j.device)
                     timestamps_j = torch.cat([timestamps_j, new_timestamps], dim=0)
 
+                # Prune oldest memory tokens if over budget
+                if max_memory_tokens is not None and memory_feat_j.shape[0] > max_memory_tokens:
+                    _, keep_indices = torch.topk(timestamps_j, k=max_memory_tokens, largest=True, sorted=False)
+                    keep_indices, _ = torch.sort(keep_indices)  # preserve spatial ordering for RoPE3D
+
+                    memory_feat_j = memory_feat_j[keep_indices]
+                    memory_pos_j = memory_pos_j[keep_indices]
+                    timestamps_j = timestamps_j[keep_indices]
+                    if takes_image_embeds:
+                        image_embeds_j = image_embeds_j[keep_indices]
+                    if takes_deepstack:
+                        for layer_idx in range(num_deepstack_layers):
+                            deepstack_embeds_j[layer_idx] = deepstack_embeds_j[layer_idx][keep_indices]
+
                 memory_feat_list.append(memory_feat_j)
                 memory_pos_list.append(memory_pos_j)
                 # NEW: Track image embeddings
@@ -948,7 +963,7 @@ class Point3R(CroCoNet):
             # This matches the structure expected when indexing by layer then by batch
             return memory_feat_list, memory_pos_list, init_memory_feat_list, img_pos, image_embeds_list, deepstack_embeds_lists if takes_deepstack else None, timestamps_list
 
-    def _forward_merge(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None, lambda_decay=1.0):
+    def _forward_merge(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None, lambda_decay=1.0, max_memory_tokens=None):
         shape, feat_ls, pos = self._encode_views(views)
         feat = feat_ls[-1]
         memory_feat, _ = self._init_memory(feat[0], pos[0])
@@ -1103,7 +1118,13 @@ class Point3R(CroCoNet):
                     deepstack_image_embeds_i=deepstack_emb_i,
                     memory_aligned_timestamps=memory_aligned_timestamps,
                     lambda_decay=lambda_decay,
+                    max_memory_tokens=max_memory_tokens,
                 )
+
+            # Free intermediate tensors to reduce GPU memory pressure
+            del dec, head_input, new_memory_feat
+            if i % 50 == 0 and i > 0:
+                torch.cuda.empty_cache()
 
         return ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds, memory_aligned_timestamps
 
@@ -1185,7 +1206,7 @@ class Point3R(CroCoNet):
 
         return ress, views
 
-    def forward(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None, lambda_decay=1.0):
+    def forward(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None, lambda_decay=1.0, max_memory_tokens=None):
         ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds, memory_aligned_timestamps = self._forward_merge(
             views,
             point3r_tag=point3r_tag,
@@ -1193,6 +1214,7 @@ class Point3R(CroCoNet):
             grid_thw_images=grid_thw_images,
             deepstack_image_embeds=deepstack_image_embeds,
             lambda_decay=lambda_decay,
+            max_memory_tokens=max_memory_tokens,
         )
         return ARCroco3DStereoOutput(
             ress=ress,

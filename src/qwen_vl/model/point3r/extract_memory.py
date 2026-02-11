@@ -101,6 +101,7 @@ def extract_pointer_memory(
     scannet_pth_path=None,
     scannet_pose_paths=None,
     lambda_decay=1.0,
+    max_memory_tokens=None,
 ):
     """
     Extract pointer memory from image inputs using Point3R model.
@@ -201,6 +202,7 @@ def extract_pointer_memory(
         deepstack_image_embeds=deepstack_image_embeds,
         verbose=verbose,
         lambda_decay=lambda_decay,
+        max_memory_tokens=max_memory_tokens,
     )
         
     # Extract memory_aligned_image_embeds from Point3R outputs
