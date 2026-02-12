@@ -96,7 +96,7 @@ def main():
         try:
             preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
                               input_images_dir, pointer_data_path, use_viser=False, unload_point3r_model=False,
-                              lambda_decay=lambda_decay, sample_ct=sample_ct, image_extensions=("*.jpg",))
+                              lambda_decay=lambda_decay, sample_ct=sample_ct, image_extensions=("*.jpg",), max_memory_tokens=10000)
         except Exception as e:
             print(f"\nFailed to process {input_images_dir}: {e}")
             continue
