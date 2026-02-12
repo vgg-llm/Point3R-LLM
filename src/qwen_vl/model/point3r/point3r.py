@@ -677,13 +677,21 @@ class Point3R(CroCoNet):
             # Reshape all images at once: (bs*h*w, C) -> (bs, h, w, C) -> (bs, C, h, w)
             embeds_spatial = image_embeds.reshape(bs, h_qwen, w_qwen, embed_dim).permute(0, 3, 1, 2)
 
-            # Single batched interpolation
-            interpolated_spatial = F.interpolate(
-                embeds_spatial,
-                size=(target_h, target_w),
-                mode='bilinear',
-                align_corners=False
-            )
+            # Chunk to avoid exceeding INT_MAX elements in F.interpolate
+            max_batch = max(1, (2**31 - 1) // (embed_dim * target_h * target_w))
+            if bs <= max_batch:
+                interpolated_spatial = F.interpolate(
+                    embeds_spatial,
+                    size=(target_h, target_w),
+                    mode='bilinear',
+                    align_corners=False
+                )
+            else:
+                chunks = [
+                    F.interpolate(chunk, size=(target_h, target_w), mode='bilinear', align_corners=False)
+                    for chunk in embeds_spatial.split(max_batch, dim=0)
+                ]
+                interpolated_spatial = torch.cat(chunks, dim=0)
 
             # (bs, C, th, tw) -> (bs, th*tw, C)
             return interpolated_spatial.reshape(bs, embed_dim, -1).permute(0, 2, 1)
