@@ -987,37 +987,50 @@ class Point3R(CroCoNet):
         deepstack_memory_aligned_embeds = None
         # NEW: Initialize memory_aligned_timestamps
         memory_aligned_timestamps = None
-        # NEW: interpolate QWEN image embedding for the Point3R
+        # Prepare per-view image embeds for lazy interpolation (saves GPU memory)
+        _interp_target_shape = None
+        _image_embeds_split = None
+        _deepstack_splits = None
         if image_embeds is not None and grid_thw_images is not None:
             img_h, img_w = shape[0][0].tolist()  # Get height and width from first view's shape
             img_pos_len_h = img_h // 16
             img_pos_len_w = img_w // 16
-            image_embeds = self._interpolate_image_embeds_to_point3r_grid(
-                image_embeds,
-                grid_thw_images,
-                target_shape=(img_pos_len_h, img_pos_len_w)
-            )  # Shape: (bs, num_patches, embed_dim) where embed_dim = image_embeds.shape[-1]
+            _interp_target_shape = (img_pos_len_h, img_pos_len_w)
+            # Split concatenated embeddings into per-image tensors (views, no copy)
+            spatial_merge_size = 2
+            h_merged = grid_thw_images[:, 1] // spatial_merge_size
+            w_merged = grid_thw_images[:, 2] // spatial_merge_size
+            patches_per_image = (h_merged * w_merged).tolist()
+            _image_embeds_split = list(torch.split(image_embeds, [int(p) for p in patches_per_image], dim=0))
 
-            # NEW: Interpolate each layer of deepstack_image_embeds
             if deepstack_image_embeds is not None:
-                interpolated_deepstack = []
-                for layer_embeds in deepstack_image_embeds:
-                    interpolated_layer = self._interpolate_image_embeds_to_point3r_grid(
-                        layer_embeds,
-                        grid_thw_images,
-                        target_shape=(img_pos_len_h, img_pos_len_w)
-                    )
-                    interpolated_deepstack.append(interpolated_layer)
-                deepstack_image_embeds = interpolated_deepstack  # List of (bs, num_patches, embed_dim)
+                _deepstack_splits = [
+                    list(torch.split(layer_embeds, [int(p) for p in patches_per_image], dim=0))
+                    for layer_embeds in deepstack_image_embeds
+                ]
 
         for i in range(len(views)):
             feat_i = feat[i]
             pos_i = pos[i]
-            img_emb_i = image_embeds[i].unsqueeze(0)
-            # NEW: Extract deepstack embeddings for current view
+            # Interpolate current view's embeddings on-the-fly to save GPU memory
+            if _image_embeds_split is not None:
+                img_emb_i = self._interpolate_image_embeds_to_point3r_grid(
+                    _image_embeds_split[i],
+                    grid_thw_images[i:i+1],
+                    target_shape=_interp_target_shape
+                )  # (1, target_h*target_w, embed_dim)
+            else:
+                img_emb_i = None
             deepstack_emb_i = None
-            if deepstack_image_embeds is not None:
-                deepstack_emb_i = [layer_embeds[i].unsqueeze(0) for layer_embeds in deepstack_image_embeds]
+            if _deepstack_splits is not None:
+                deepstack_emb_i = [
+                    self._interpolate_image_embeds_to_point3r_grid(
+                        _deepstack_splits[layer_idx][i],
+                        grid_thw_images[i:i+1],
+                        target_shape=_interp_target_shape
+                    )
+                    for layer_idx in range(len(_deepstack_splits))
+                ]
             if i >= 2:
                 merge_tag = True
             if merge_tag:
