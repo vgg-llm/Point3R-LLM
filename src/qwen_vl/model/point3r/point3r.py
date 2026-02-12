@@ -937,9 +937,10 @@ class Point3R(CroCoNet):
                     new_timestamps = torch.full((num_new_tokens,), i, dtype=torch.long, device=timestamps_j.device)
                     timestamps_j = torch.cat([timestamps_j, new_timestamps], dim=0)
 
-                # Prune oldest memory tokens if over budget
+                # Prune memory tokens if over budget (random selection)
                 if max_memory_tokens is not None and memory_feat_j.shape[0] > max_memory_tokens:
-                    _, keep_indices = torch.topk(timestamps_j, k=max_memory_tokens, largest=True, sorted=False)
+                    perm = torch.randperm(memory_feat_j.shape[0], device=memory_feat_j.device)
+                    keep_indices = perm[:max_memory_tokens]
                     keep_indices, _ = torch.sort(keep_indices)  # preserve spatial ordering for RoPE3D
 
                     memory_feat_j = memory_feat_j[keep_indices]
