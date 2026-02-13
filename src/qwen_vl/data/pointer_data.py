@@ -43,6 +43,7 @@ def load_pointer_data(
         - 'pointer_positions': torch.Tensor (N, 3)
         - 'deepstack_pointer_embeds': Optional[List[torch.Tensor]]
         - 'memory_feat': Optional[torch.Tensor]
+        - 'pointer_timestamps': Optional[torch.Tensor]
         - 'num_pointers': int
 
     Raises:
@@ -70,25 +71,28 @@ def load_pointer_data(
     # Extract optional fields
     deepstack_pointer_embeds = pointer_data.get("deepstack_image_embeds")
     memory_feat = pointer_data.get("memory_feat")
+    pointer_timestamps = pointer_data.get("pointer_timestamps")
 
-    # Truncate if necessary
+    # Randomly sample if exceeding max tokens
     if num_pointers > max_pointer_tokens:
         logger.debug(
-            f"Truncating pointer data from {num_pointers} to {max_pointer_tokens} tokens"
+            f"Randomly sampling pointer data from {num_pointers} to {max_pointer_tokens} tokens"
         )
+        indices = torch.randperm(num_pointers)[:max_pointer_tokens].sort().values
         num_pointers = max_pointer_tokens
-        pointer_memory_embeds = pointer_memory_embeds[:max_pointer_tokens].clone()
-        pointer_positions = pointer_positions[:max_pointer_tokens].clone()
+        pointer_memory_embeds = pointer_memory_embeds[indices].clone()
+        pointer_positions = pointer_positions[indices].clone()
 
-        # Truncate deepstack if present
         if deepstack_pointer_embeds is not None:
             deepstack_pointer_embeds = [
-                d[:max_pointer_tokens].clone() for d in deepstack_pointer_embeds
+                d[indices].clone() for d in deepstack_pointer_embeds
             ]
 
-        # Truncate memory_feat if present
         if memory_feat is not None:
-            memory_feat = memory_feat[:max_pointer_tokens].clone()
+            memory_feat = memory_feat[indices].clone()
+
+        if pointer_timestamps is not None:
+            pointer_timestamps = pointer_timestamps[indices].clone()
 
     # Free original data to save memory
     del pointer_data
@@ -98,6 +102,7 @@ def load_pointer_data(
         "pointer_positions": pointer_positions,
         "deepstack_pointer_embeds": deepstack_pointer_embeds,
         "memory_feat": memory_feat,
+        "pointer_timestamps": pointer_timestamps,
         "num_pointers": num_pointers,
     }
 
@@ -185,6 +190,15 @@ def prepare_pointer_batch(
     ):
         batch["memory_feat"] = torch.cat(
             [inst["memory_feat"] for inst in pointer_instances], dim=0
+        )
+
+    # Concatenate pointer timestamps
+    if (
+        "pointer_timestamps" in pointer_instances[0]
+        and pointer_instances[0]["pointer_timestamps"] is not None
+    ):
+        batch["pointer_timestamps"] = torch.cat(
+            [inst["pointer_timestamps"] for inst in pointer_instances], dim=0
         )
 
     return batch
