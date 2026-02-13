@@ -432,7 +432,10 @@ def preprocess_images(
     
     if len(image_paths) > sample_ct:
         step = len(image_paths) / sample_ct
-        image_paths = [image_paths[int(i * step)] for i in range(sample_ct)]
+        frames_indices = [int(i * step) for i in range(sample_ct)]
+        image_paths = [image_paths[idx] for idx in frames_indices]
+    else:
+        frames_indices = list(range(len(image_paths)))
 
     # Read pose files from input_poses_dir if provided
     pose_paths = None
@@ -549,6 +552,7 @@ def preprocess_images(
         scannet_pose_paths=pose_paths,
         lambda_decay=lambda_decay,
         max_memory_tokens=max_memory_tokens,
+        frames_indices=frames_indices,
     )
 
     # Log timestamp statistics for testing
@@ -624,7 +628,8 @@ def run_models(model,
     text_pointer = processor.apply_chat_template(messages_with_pointer, tokenize=False, add_generation_prompt=True)
     inputs_pointer = processor(
         text=[text_pointer],
-        pointers=pointer_data['pointer_memory_embeds'],
+        pointer_timestamps=pointer_data['pointer_timestamps'],
+        frames_indices=pointer_data.get('frames_indices'),
         padding=True,
         return_tensors="pt",
     )
@@ -1159,13 +1164,16 @@ if __name__=='__main__':
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
     input_images_dir = "./data/media/scannet/posed_images/scene0000_01"
     pointer_data_path = "./data/demo_data/scene0000_01.pt"
+    # input_images_dir = "./data/demo_data/arkit_47895700"
+    # pointer_data_path = "./data/demo_data/arkit_47895700.pt"
     
     # query = "Describe this image."
-    query = "Describe this scene."
+    query = "Describe this scene in detail, in the order of appearances."
     model_path="Qwen/Qwen3-VL-4B-Instruct"
-    use_viser = True
-    sample_ct = 512
+    use_viser = False
+    sample_ct = 32
     model, processor, min_pixels, max_pixels, point3r_model = load_models(model_path=model_path)
-    preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                      input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=10000)
+    # preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
+    #                   input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=15000, 
+    #                   image_extensions = ("*.jpg", ))
     run_models(model, processor, pointer_data_path, query)

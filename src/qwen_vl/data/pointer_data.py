@@ -72,6 +72,7 @@ def load_pointer_data(
     deepstack_pointer_embeds = pointer_data.get("deepstack_image_embeds")
     memory_feat = pointer_data.get("memory_feat")
     pointer_timestamps = pointer_data.get("pointer_timestamps")
+    frames_indices = pointer_data.get("frames_indices")
 
     # Randomly sample if exceeding max tokens
     if num_pointers > max_pointer_tokens:
@@ -103,6 +104,7 @@ def load_pointer_data(
         "deepstack_pointer_embeds": deepstack_pointer_embeds,
         "memory_feat": memory_feat,
         "pointer_timestamps": pointer_timestamps,
+        "frames_indices": frames_indices,
         "num_pointers": num_pointers,
     }
 
@@ -132,6 +134,72 @@ def expand_pointer_tokens(
     if pointer_token in content:
         return content.replace(pointer_token, pointer_token * num_pointer_tokens)
     return content
+
+
+def expand_pointer_tokens_grouped(
+    content: str,
+    pointer_timestamps: "torch.Tensor",
+    frames_indices: Optional[List[int]] = None,
+    pointer_fps: Optional[float] = None,
+    pointer_token: str = "<|pointer_pad|>",
+    vision_start_token: str = "<|vision_start|>",
+    vision_end_token: str = "<|vision_end|>",
+) -> str:
+    """Expand a single pointer placeholder to timestamp-grouped pointer tokens.
+
+    Groups pointer tokens by their timestamp and wraps each group with
+    timestamp headers and vision markers, matching the video token format.
+
+    Args:
+        content: Text content containing pointer token placeholder
+        pointer_timestamps: Per-token frame indices (N,) sorted ascending
+        frames_indices: Original image indices that were sampled (optional)
+        pointer_fps: Frames per second for timestamp conversion.
+            If None, defaults to 24.0 when frames_indices is provided
+            (matching Qwen3VL video fallback), or 1.0 otherwise.
+        pointer_token: The pointer token string
+        vision_start_token: Vision start marker
+        vision_end_token: Vision end marker
+
+    Returns:
+        Content with grouped pointer tokens
+
+    Example:
+        >>> ts = torch.tensor([0, 0, 0, 1, 1, 2, 2, 2, 2])
+        >>> expand_pointer_tokens_grouped("Here <|pointer_pad|> scene", ts)
+        "Here <0.0 seconds><|vision_start|><|pointer_pad|>*3<|vision_end|><1.0 seconds>... scene"
+    """
+    if pointer_token not in content:
+        return content
+
+    # Auto-select FPS: use 24.0 when frames_indices maps to original frame
+    # numbers (like video), or 1.0 when using raw sampled-frame indices
+    if pointer_fps is None:
+        pointer_fps = 24.0 if frames_indices is not None else 1.0
+
+    # Group tokens by timestamp
+    unique_timestamps = pointer_timestamps.unique(sorted=True)
+    grouped_placeholder = ""
+    for ts in unique_timestamps:
+        count = (pointer_timestamps == ts).sum().item()
+        ts_val = ts.item()
+
+        # Convert frame index to seconds
+        if frames_indices is not None and int(ts_val) < len(frames_indices):
+            time_seconds = frames_indices[int(ts_val)] / pointer_fps
+        else:
+            time_seconds = ts_val / pointer_fps
+
+        grouped_placeholder += f"<{time_seconds:.1f} seconds>"
+        grouped_placeholder += (
+            vision_start_token + pointer_token * count + vision_end_token
+        )
+
+    # Handle both wrapped and bare pointer token patterns
+    wrapped = f"{vision_start_token}{pointer_token}{vision_end_token}"
+    if wrapped in content:
+        return content.replace(wrapped, grouped_placeholder, 1)
+    return content.replace(pointer_token, grouped_placeholder, 1)
 
 
 def prepare_pointer_batch(

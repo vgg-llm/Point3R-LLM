@@ -585,7 +585,8 @@ class Point3RLLMv2(lmms):
                 # Use pointer processing
                 inputs = self.processor(
                     text=text,
-                    pointers=pointer_data['pointer_memory_embeds'],
+                    pointer_timestamps=pointer_data.get('pointer_timestamps'),
+                    frames_indices=pointer_data.get('frames_indices'),
                     padding=True,
                     return_tensors="pt",
                 )

@@ -102,6 +102,7 @@ def extract_pointer_memory(
     scannet_pose_paths=None,
     lambda_decay=1.0,
     max_memory_tokens=None,
+    frames_indices=None,
 ):
     """
     Extract pointer memory from image inputs using Point3R model.
@@ -276,6 +277,19 @@ def extract_pointer_memory(
                   f"y[{pointer_positions[:, 1].min():.3f}, {pointer_positions[:, 1].max():.3f}], "
                   f"z[{pointer_positions[:, 2].min():.3f}, {pointer_positions[:, 2].max():.3f}]")
 
+    # Sort all pointer data by ascending timestamp
+    if pointer_timestamps is not None:
+        sort_indices = torch.argsort(pointer_timestamps)
+        pointer_timestamps = pointer_timestamps[sort_indices]
+        pointer_memory_embeds = pointer_memory_embeds[sort_indices]
+        pointer_positions = pointer_positions[sort_indices]
+        if memory_feat is not None:
+            memory_feat = memory_feat[sort_indices]
+        if deepstack_memory_aligned_embeds is not None:
+            deepstack_memory_aligned_embeds = [layer[sort_indices] for layer in deepstack_memory_aligned_embeds]
+        if verbose:
+            print(f"Sorted pointer data by timestamp (ascending)")
+
     # Extract camera poses from Point3R predictions (if pose_head=True)
     camera_poses = []
     if 'pred' in outputs and outputs['pred'] is not None:
@@ -405,7 +419,7 @@ def extract_pointer_memory(
             gui_next_frame = server.gui.add_button("Next Frame")
             gui_prev_frame = server.gui.add_button("Prev Frame")
             gui_playing = server.gui.add_checkbox("Playing", False)
-            gui_framerate = server.gui.add_slider("FPS", min=0.5, max=10, step=0.1, initial_value=1)
+            gui_framerate = server.gui.add_slider("FPS", min=0.5, max=100, step=0.5, initial_value=1)
             gui_accumulative = server.gui.add_checkbox("Accumulative Mode", True)
             gui_stride = server.gui.add_slider("Stride", min=1, max=max(num_frames, 1), step=1, initial_value=1)
 
@@ -676,6 +690,10 @@ def extract_pointer_memory(
     # Add pointer_timestamps if available
     if pointer_timestamps is not None:
         result['pointer_timestamps'] = pointer_timestamps
+
+    # Add frames_indices if available
+    if frames_indices is not None:
+        result['frames_indices'] = frames_indices
 
     return result
 

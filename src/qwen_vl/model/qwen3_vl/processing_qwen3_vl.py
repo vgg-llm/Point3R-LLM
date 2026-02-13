@@ -354,7 +354,9 @@ class Qwen3VLProcessorWithPoint3R(Qwen3VLProcessor):
         images: ImageInput = None,
         text: TextInput | PreTokenizedInput | list[TextInput] | list[PreTokenizedInput] = None,
         videos: VideoInput = None,
-        pointers=None,
+        pointer_timestamps=None,
+        frames_indices=None,
+        pointer_fps=None,
         **kwargs: Unpack[Qwen3VLProcessorKwargs],
     ) -> BatchFeature:
         r"""
@@ -397,12 +399,6 @@ class Qwen3VLProcessorWithPoint3R(Qwen3VLProcessor):
         else:
             videos_inputs = {}
             video_grid_thw = None
-
-        # Handle pointer tokens
-        if pointers is not None:
-            pointer_num_tok = pointers.shape[0]
-        else:
-            pointer_num_tok = None
 
         if not isinstance(text, list):
             text = [text]
@@ -458,26 +454,53 @@ class Qwen3VLProcessorWithPoint3R(Qwen3VLProcessor):
 
                 text[i] = text[i].replace("<|placeholder|>", self.video_token)
 
-        # Handle pointer tokens expansion
-        if pointer_num_tok is not None:
+        # Handle pointer tokens: grouped by timestamp (like video frames)
+        if pointer_timestamps is not None:
+            # Auto-select FPS: 24.0 when frames_indices maps to original frame
+            # numbers (like video), 1.0 when using raw sampled-frame indices
+            if pointer_fps is not None:
+                fps = pointer_fps
+            elif frames_indices is not None:
+                fps = 24.0
+            else:
+                fps = 1.0
+            unique_timestamps = pointer_timestamps.unique(sorted=True)
+
+            # Build grouped placeholder: <time><vision_start><pointer>*N<vision_end> per group
+            pointer_placeholder = ""
+            for ts in unique_timestamps:
+                count = (pointer_timestamps == ts).sum().item()
+                ts_val = ts.item()
+
+                # Convert frame index to seconds
+                if frames_indices is not None and int(ts_val) < len(frames_indices):
+                    time_seconds = frames_indices[int(ts_val)] / fps
+                else:
+                    time_seconds = ts_val / fps
+
+                pointer_placeholder += f"<{time_seconds:.1f} seconds>"
+                pointer_placeholder += (
+                    self.vision_start_token + "<|placeholder|>" * count + self.vision_end_token
+                )
+
             for i in range(len(text)):
-                while self.pointer_token in text[i]:
-                    text[i] = text[i].replace(
-                        self.pointer_token,
-                        "<|placeholder|>" * pointer_num_tok,
-                        1,
-                    )
+                wrapped = f"{self.vision_start_token}{self.pointer_token}{self.vision_end_token}"
+                if wrapped in text[i]:
+                    text[i] = text[i].replace(wrapped, pointer_placeholder, 1)
+                elif self.pointer_token in text[i]:
+                    text[i] = text[i].replace(self.pointer_token, pointer_placeholder, 1)
                 text[i] = text[i].replace("<|placeholder|>", self.pointer_token)
 
         return_tensors = output_kwargs["text_kwargs"].pop("return_tensors", None)
         return_mm_token_type_ids = output_kwargs["text_kwargs"].pop("return_mm_token_type_ids", None)
         text_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
-        self._check_special_mm_tokens(text, text_inputs, modalities=["image", "video"])
+        self._check_special_mm_tokens(text, text_inputs, modalities=["image", "video", "pointer"])
 
         if return_mm_token_type_ids:
             array_ids = np.array(text_inputs["input_ids"])
             mm_token_type_ids = np.zeros_like(text_inputs["input_ids"])
             mm_token_type_ids[array_ids == self.image_token_id] = 1
+            mm_token_type_ids[array_ids == self.pointer_token_id] = 1
             text_inputs["mm_token_type_ids"] = mm_token_type_ids.tolist()
 
         return BatchFeature(data={**text_inputs, **image_inputs, **videos_inputs}, tensor_type=return_tensors)

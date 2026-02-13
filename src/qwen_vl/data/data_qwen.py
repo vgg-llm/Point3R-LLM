@@ -24,7 +24,7 @@ import transformers
 from . import data_list
 from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2, get_rope_index_qwen3vl, get_rope_index_qwen3vl_discrete
 from .utils import prepare_image_inputs
-from .pointer_data import load_pointer_data, expand_pointer_tokens
+from .pointer_data import load_pointer_data, expand_pointer_tokens, expand_pointer_tokens_grouped
 
 IGNORE_INDEX = -100
 IMAGE_TOKEN_INDEX = 151655
@@ -510,6 +510,8 @@ class LazySupervisedDataset(Dataset):
             pointer_positions = pointer_data['pointer_positions']
             deepstack_pointer_embeds = pointer_data['deepstack_pointer_embeds']
             memory_feat = pointer_data['memory_feat']
+            pointer_timestamps = pointer_data.get('pointer_timestamps')
+            frames_indices = pointer_data.get('frames_indices')
 
             # Process conversations with pointer token expansion
             sources_conv = copy.deepcopy([e["conversations"] for e in sources])
@@ -549,9 +551,15 @@ class LazySupervisedDataset(Dataset):
                     content = conv.get("content", conv.get("value"))
                     role = roles.get(role, role)
 
-                    # EXPAND pointer token: single <|pointer_pad|> → N <|pointer_pad|>
-                    # Using shared utility to ensure consistent expansion
-                    content = expand_pointer_tokens(content, num_pointer_tokens, pointer_token)
+                    # EXPAND pointer token: grouped by timestamp or flat fallback
+                    if pointer_timestamps is not None:
+                        content = expand_pointer_tokens_grouped(
+                            content, pointer_timestamps,
+                            frames_indices=frames_indices,
+                            pointer_token=pointer_token,
+                        )
+                    else:
+                        content = expand_pointer_tokens(content, num_pointer_tokens, pointer_token)
 
                     # Tokenize the expanded content
                     conv_formatted = [{"role": role, "content": content}]
@@ -588,6 +596,7 @@ class LazySupervisedDataset(Dataset):
             pointer_positions_to_store = pointer_positions
             deepstack_pointer_embeds_to_store = deepstack_pointer_embeds
             memory_feat_to_store = memory_feat
+            pointer_timestamps_to_store = pointer_timestamps
         else:
             grid_thw_merged = None
             sources = copy.deepcopy([e["conversations"] for e in sources])
@@ -624,6 +633,8 @@ class LazySupervisedDataset(Dataset):
             if deepstack_pointer_embeds_to_store is not None:
                 data_dict["deepstack_pointer_embeds"] = deepstack_pointer_embeds_to_store
             data_dict["memory_feat"] = memory_feat_to_store
+            if pointer_timestamps_to_store is not None:
+                data_dict["pointer_timestamps"] = pointer_timestamps_to_store
 
         data_dict["tag"] = self.list_data_dict[i].get("tag", "2d")
         return data_dict
@@ -763,6 +774,11 @@ class DataCollatorForSupervisedDataset(object):
             pointer_positions = [instance["memory_feat"] for instance in instances]
             # Concatenate along the first dimension (number of pointer tokens)
             batch["memory_feat"] = torch.cat(pointer_positions, dim=0)
+
+        if "pointer_timestamps" in instances[0]:
+            batch["pointer_timestamps"] = torch.cat(
+                [instance["pointer_timestamps"] for instance in instances], dim=0
+            )
 
         return batch
 
