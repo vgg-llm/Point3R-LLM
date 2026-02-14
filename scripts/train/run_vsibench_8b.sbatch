@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=Point3R-LLM-vsibench_8b
-#SBATCH -o sbatch_log/vsibench-8b.%j.out # Name of stdout output file
+#SBATCH -o sbatch_log/vsibench-8b-32frame-video.%j.out # Name of stdout output file
 #SBATCH --partition=cms_cvlab
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1

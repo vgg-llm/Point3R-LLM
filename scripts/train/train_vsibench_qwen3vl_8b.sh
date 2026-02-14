@@ -17,7 +17,7 @@ DATASETS="vsibench_point3r" #or vstibench_point3r  # [DataArguments] VSIBench an
 # Path Configuration
 # ======================
 MODEL_PATH="Qwen/Qwen3-VL-8B-Instruct"  # [ModelArguments] Pretrained model path
-EXP_NAME="vsibench_Qwen3VL_8b_memfeat"
+EXP_NAME="vsibench_Qwen3VL_8b_memfeat_32frame_video"
 OUTPUT_DIR="./outputs/${EXP_NAME}"
 CACHE_DIR="./cache"                        # [TrainingArguments] Cache directory for models
 mkdir -p $OUTPUT_DIR

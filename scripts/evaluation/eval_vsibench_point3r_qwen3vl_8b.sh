@@ -11,7 +11,7 @@ export NCCL_NVLS_ENABLE=0
 # choices: [vsibench_point3r, vstibench_point3r]
 benchmarks="vsibench_point3r"
 output_path=logs/vsibench_$(TZ="Asia/Shanghai" date "+%Y%m%d_%H%M%S")
-model_path=./outputs/vsibench_Qwen3VL_8b_memfeat
+model_path=./outputs/vsibench_Qwen3VL_8b_memfeat_32frame_video
 
 model_args_str="pretrained=$model_path,use_flash_attention_2=true,max_num_frames=32,max_length=12800,use_pointer_memory=True,use_preprocessed_input=True,\
 merge_memory_feat=True,memory_fusion_method=add"
