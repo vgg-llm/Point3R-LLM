@@ -93,13 +93,17 @@ def main():
         # Skip if already processed
         if Path(pointer_data_path).exists():
             continue
-        try:
-            preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                              input_images_dir, pointer_data_path, use_viser=False, unload_point3r_model=False,
-                              lambda_decay=lambda_decay, sample_ct=sample_ct, image_extensions=("*.jpg",), max_memory_tokens=10000)
-        except Exception as e:
-            print(f"\nFailed to process {input_images_dir}: {e}")
-            continue
+        for max_mem in [None, 15000, 10000]:
+            try:
+                preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
+                                  input_images_dir, pointer_data_path, use_viser=False, unload_point3r_model=False,
+                                  lambda_decay=lambda_decay, sample_ct=sample_ct, image_extensions=("*.jpg",), max_memory_tokens=max_mem)
+                break
+            except Exception as e:
+                if max_mem == 10000:
+                    print(f"\nFailed to process {input_images_dir}: {e}")
+                else:
+                    print(f"\nmax_memory_tokens={max_mem} failed for {input_images_dir}, retrying with lower limit: {e}")
 
     print(f"\nGPU {gpu_id}: Completed processing {len(local_input_paths)} scenes!")
 
