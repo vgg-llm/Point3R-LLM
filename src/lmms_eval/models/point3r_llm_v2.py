@@ -499,7 +499,7 @@ class Point3RLLMv2(lmms):
                             pointer_data = load_pointer_data(
                                 pointer_data_path=pointer_data_path,
                                 base_dir=self.base_dir,
-                                max_pointer_tokens=8000,
+                                max_pointer_tokens=30000,
                             )
                             eval_logger.debug(f"Loaded pointer data: {pointer_data['num_pointers']} tokens")
                         except FileNotFoundError as e:
