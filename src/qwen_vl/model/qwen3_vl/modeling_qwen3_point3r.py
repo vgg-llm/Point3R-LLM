@@ -321,6 +321,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         attention_mask: torch.Tensor | None = None,
         pointer_memory_embeds: Optional[torch.Tensor] = None,
         pointer_positions: Optional[torch.Tensor] = None,
+        pointer_timestamps: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Calculate RoPE indices based on rope_mode configuration.
@@ -329,6 +330,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         - "none": No special handling for pointers (parent behavior, 3D RoPE)
         - "discrete": Discretized 4D positions for pointer tokens
         - "continuous": Base 3D positions; continuous RoPE applied in forward
+        - "pointer_timestamp": 3D RoPE treating pointer groups as visual tokens
         """
         rope_mode = getattr(self.config, 'rope_mode', 'none')
 
@@ -343,6 +345,16 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
                 pointer_memory_embeds=pointer_memory_embeds,
                 pointer_positions=pointer_positions,
                 position_range=getattr(self.config, 'rope_position_range', 128),
+            )
+        elif rope_mode == "pointer_timestamp" and pointer_timestamps is not None:
+            from ...data.rope2d import get_rope_index_qwen3vl_pointer
+            return get_rope_index_qwen3vl_pointer(
+                spatial_merge_size=2,
+                input_ids=input_ids,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                attention_mask=attention_mask,
+                pointer_timestamps=pointer_timestamps,
             )
         else:
             # For "none" and "continuous" modes, use parent's get_rope_index (3D RoPE)
@@ -372,6 +384,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         pointer_positions: Optional[torch.Tensor] = None,
         deepstack_pointer_embeds: Optional[List[torch.Tensor]] = None,
         memory_feat: Optional[torch.FloatTensor] = None,
+        pointer_timestamps: Optional[torch.Tensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> Tuple | Qwen3VLCausalLMOutputWithPast:
         """
@@ -382,6 +395,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             pointer_positions: 3D positions for each pointer (num_pointers, 3) as [h, w, d]
             deepstack_pointer_embeds: List of intermediate layer embeddings for pointers
             memory_feat: Point3R internal decoder features (num_pointers, 768) for fusion
+            pointer_timestamps: Per-token frame indices (num_pointers,) for timestamp-grouped RoPE
             ... (other args same as parent)
         """
         # Get input embeddings
@@ -505,6 +519,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
                     attention_mask=attention_mask,
                     pointer_memory_embeds=pointer_memory_embeds,
                     pointer_positions=pointer_positions,
+                    pointer_timestamps=pointer_timestamps,
                 )
                 self.model.rope_deltas = rope_deltas
             else:
@@ -568,6 +583,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         pointer_positions=None,
         deepstack_pointer_embeds=None,
         memory_feat=None,
+        pointer_timestamps=None,
         **kwargs,
     ):
         """Prepare inputs for generation with pointer memory support."""
@@ -586,6 +602,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             pointer_positions=pointer_positions,
             deepstack_pointer_embeds=deepstack_pointer_embeds,
             memory_feat=memory_feat,
+            pointer_timestamps=pointer_timestamps,
             use_cache=use_cache,
             **kwargs,
         )
@@ -605,6 +622,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             model_inputs["pointer_positions"] = None
             model_inputs["deepstack_pointer_embeds"] = None
             model_inputs["memory_feat"] = None
+            model_inputs["pointer_timestamps"] = None
         return model_inputs
 
     def _get_pointer_nums(
@@ -645,7 +663,7 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         visual_keys = [
             "pixel_values", "image_grid_thw", "pixel_values_videos",
             "video_grid_thw", "pointer_memory_embeds", "pointer_positions",
-            "deepstack_pointer_embeds", "memory_feat"
+            "deepstack_pointer_embeds", "memory_feat", "pointer_timestamps"
         ]
 
         def _expand_dict_for_generation_visual(dict_to_expand):
@@ -710,6 +728,12 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
                     ]
                 elif key == "memory_feat" and dict_to_expand[key] is not None:
                     # memory_feat has same structure as pointer_memory_embeds
+                    lengths = list(pointer_nums)
+                    dict_to_expand[key] = _repeat_interleave_samples(
+                        dict_to_expand[key], lengths=lengths, repeat_times=expand_size
+                    )
+                elif key == "pointer_timestamps" and dict_to_expand[key] is not None:
+                    # pointer_timestamps has same structure as pointer_memory_embeds
                     lengths = list(pointer_nums)
                     dict_to_expand[key] = _repeat_interleave_samples(
                         dict_to_expand[key], lengths=lengths, repeat_times=expand_size

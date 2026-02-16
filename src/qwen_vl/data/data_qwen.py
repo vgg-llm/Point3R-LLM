@@ -22,7 +22,7 @@ from decord import VideoReader
 import transformers
 
 from . import data_list
-from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2, get_rope_index_qwen3vl, get_rope_index_qwen3vl_discrete
+from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2, get_rope_index_qwen3vl, get_rope_index_qwen3vl_discrete, get_rope_index_qwen3vl_pointer
 from .utils import prepare_image_inputs
 from .pointer_data import load_pointer_data, expand_pointer_tokens, expand_pointer_tokens_grouped
 
@@ -155,6 +155,8 @@ class LazySupervisedDataset(Dataset):
         elif data_args.model_type == "qwen3vl-rope-continuous":
             # Use base qwen3vl; continuous RoPE applied in model forward
             self.get_rope_index = get_rope_index_qwen3vl
+        elif data_args.model_type == "qwen3vl-rope-pointer":
+            self.get_rope_index = get_rope_index_qwen3vl_pointer
         elif data_args.model_type == "qwen3vl-spatial":
             # Backward compatibility: use discrete RoPE for spatial
             self.get_rope_index = get_rope_index_qwen3vl_discrete
@@ -588,7 +590,8 @@ class LazySupervisedDataset(Dataset):
                 self.data_args.image_processor.merge_size,
                 data_dict["input_ids"],
                 pointer_memory_embeds=pointer_memory_embeds,
-                pointer_positions=pointer_positions
+                pointer_positions=pointer_positions,
+                pointer_timestamps=pointer_timestamps,
             )
 
             # Store pointer memory for later use

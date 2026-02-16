@@ -255,6 +255,8 @@ def train(attn_implementation="flash_attention_2"):
                 data_args.model_type = "qwen3vl-rope-discrete"
             elif rope_mode == "continuous":
                 data_args.model_type = "qwen3vl-rope-continuous"
+            elif rope_mode == "pointer_timestamp":
+                data_args.model_type = "qwen3vl-rope-pointer"
             else:
                 data_args.model_type = "qwen3vl"
 

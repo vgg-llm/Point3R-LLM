@@ -313,7 +313,7 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
     print("="*70)
     stage0_start = time()
 
-    if 'Qwen3-VL' in model_path:
+    if 'Qwen3-VL' in model_path or 'Qwen3VL' in model_path:
         from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
         from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
         # Load model with memory-efficient settings
@@ -648,6 +648,11 @@ def run_models(model,
     assert pointer_memory_embeds.shape[0] == pointer_positions.shape[0], \
         f"Shape mismatch: embeds {pointer_memory_embeds.shape} vs positions {pointer_positions.shape}"
 
+    # Prepare pointer timestamps if available
+    pointer_timestamps = None
+    if 'pointer_timestamps' in pointer_data:
+        pointer_timestamps = pointer_data['pointer_timestamps'].to(model.device)
+
     # Generate with pointer memory
     with torch.inference_mode():
         generated_ids_pointer = model.generate(
@@ -655,6 +660,7 @@ def run_models(model,
             pointer_memory_embeds=pointer_memory_embeds,
             pointer_positions=pointer_positions,
             deepstack_pointer_embeds=deepstack_pointer_embeds,
+            pointer_timestamps=pointer_timestamps,
             max_new_tokens=1024,
             do_sample=True,
         )
@@ -1173,7 +1179,7 @@ if __name__=='__main__':
     use_viser = False
     sample_ct = 32
     model, processor, min_pixels, max_pixels, point3r_model = load_models(model_path=model_path)
-    # preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-    #                   input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=15000, 
-    #                   image_extensions = ("*.jpg", ))
+    preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
+                      input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=15000, 
+                      image_extensions = ("*.jpg", ))
     run_models(model, processor, pointer_data_path, query)

@@ -55,7 +55,7 @@ class ModelArguments:
     # RoPE ablation parameters for pointer tokens
     rope_mode: str = field(
         default="none",
-        metadata={"help": "RoPE mode for pointer tokens: 'none', 'discrete', 'continuous'"}
+        metadata={"help": "RoPE mode for pointer tokens: 'none', 'discrete', 'continuous', 'pointer_timestamp'"}
     )
     rope_position_range: int = field(
         default=128,
