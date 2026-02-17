@@ -148,6 +148,7 @@ class LazySupervisedDataset(Dataset):
             data_args, "video_min_total_pixels", 256 * 28 * 28
         )
         self.model_type = data_args.model_type
+        self.pointer_format = getattr(data_args, "pointer_format", "video")
         if data_args.model_type == "qwen3vl":
             self.get_rope_index = get_rope_index_qwen3vl
         elif data_args.model_type == "qwen3vl-rope-discrete":
@@ -553,8 +554,8 @@ class LazySupervisedDataset(Dataset):
                     content = conv.get("content", conv.get("value"))
                     role = roles.get(role, role)
 
-                    # EXPAND pointer token: grouped by timestamp or flat fallback
-                    if pointer_timestamps is not None:
+                    # EXPAND pointer token: grouped by timestamp (video) or flat (image)
+                    if self.pointer_format == "video" and pointer_timestamps is not None:
                         content = expand_pointer_tokens_grouped(
                             content, pointer_timestamps,
                             frames_indices=frames_indices,

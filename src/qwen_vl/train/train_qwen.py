@@ -238,6 +238,7 @@ def train(attn_implementation="flash_attention_2"):
                 tokenizer=base_processor.tokenizer,
                 video_processor=base_processor.video_processor if hasattr(base_processor, 'video_processor') else None,
                 chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+                pointer_format=getattr(model_args, "pointer_format", "video"),
             )
 
             # Store pointer token ID in model config for proper processing
@@ -263,6 +264,9 @@ def train(attn_implementation="flash_attention_2"):
             # Pass RoPE config to model
             model.config.rope_mode = rope_mode
             model.config.rope_position_range = getattr(model_args, "rope_position_range", 128)
+
+            # Pass pointer format to data pipeline
+            data_args.pointer_format = getattr(model_args, "pointer_format", "video")
         elif model_args.use_geometry_encoder:
             from qwen_vl.model.qwen3_vl.modeling_qwen_vggt import Qwen3VLForConditionalGenerationWithVGGT
 

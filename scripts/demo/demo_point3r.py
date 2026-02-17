@@ -31,16 +31,14 @@ def main():
     model_path = "Qwen/Qwen3-VL-4B-Instruct"
     # Load model with memory-efficient settings
     print("Loading model...")
+    pointer_format = "video"  # Default pointer format for main() demo
     if 'Qwen3-VL' in model_path:
         from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
         from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
         # Load model with memory-efficient settings
         print(f"Loading model from: {model_path}")
-        model_args = "merge_memory_feat=True,memory_fusion_method=add,tune_memory_feature_projector=True,tune_memory_feature_fusion=True"
-        print(f"Model args:", model_args)
         model = Qwen3VLForConditionalGenerationWithPoint3R.from_pretrained(
             model_path,
-            model_args=model_args,
             cache_dir="./cache",
             torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
             device_map="auto" if device is None else device,  # Automatically distribute model across available devices
@@ -61,6 +59,7 @@ def main():
             tokenizer=base_processor.tokenizer,
             video_processor=base_processor.video_processor,
             chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+            pointer_format=pointer_format,
         )
     else:
         from qwen_vl.model.modeling_qwen_point3r import Qwen2_5_VLForConditionalGenerationWithPoint3R
@@ -292,7 +291,7 @@ def main():
     print(f"Total runtime: {stage2_end - stage0_start:.2f} seconds")
     print("="*70)
 
-def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-Instruct"):
+def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-Instruct", pointer_format="video"):
     """
     Load models for inference.
 
@@ -340,6 +339,7 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
             tokenizer=base_processor.tokenizer,
             video_processor=base_processor.video_processor,
             chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+            pointer_format=pointer_format,
         )
     else:
         from qwen_vl.model.modeling_qwen_point3r import Qwen2_5_VLForConditionalGenerationWithPoint3R
@@ -652,6 +652,25 @@ def run_models(model,
     pointer_timestamps = None
     if 'pointer_timestamps' in pointer_data:
         pointer_timestamps = pointer_data['pointer_timestamps'].to(model.device)
+        
+    # Debug hook to capture rope index
+    _original_get_rope_index = model.get_rope_index
+
+    def _debug_get_rope_index(*args, **kwargs):
+        position_ids, rope_deltas = _original_get_rope_index(*args, **kwargs)
+        print(f"\n[DEBUG RoPE] position_ids shape: {position_ids.shape}")
+        print(f"[DEBUG RoPE] rope_deltas: {rope_deltas}")
+        print(f"[DEBUG RoPE] position_ids range per dim:")
+        for d in range(position_ids.shape[0]):
+            vals = position_ids[d, 0]
+            print(f"  dim {d}: min={vals.min().item()}, max={vals.max().item()}")
+        print(position_ids[0, 0][:100])
+        print(position_ids[0, 0][4000:4100])
+        print(position_ids[0, 0][-100:])
+        # Save for inspection
+        return position_ids, rope_deltas
+
+    model.get_rope_index = _debug_get_rope_index
 
     # Generate with pointer memory
     with torch.inference_mode():
@@ -1179,7 +1198,7 @@ if __name__=='__main__':
     use_viser = False
     sample_ct = 32
     model, processor, min_pixels, max_pixels, point3r_model = load_models(model_path=model_path)
-    preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                      input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=15000, 
-                      image_extensions = ("*.jpg", ))
+    # preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
+    #                   input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None, 
+    #                   image_extensions = ("*.jpg", ))
     run_models(model, processor, pointer_data_path, query)

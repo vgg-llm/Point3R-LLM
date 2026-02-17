@@ -131,6 +131,8 @@ class Point3RLLMv2(lmms):
         # RoPE ablation parameters
         rope_mode: str = "none",
         rope_position_range: int = 128,
+        # Pointer token format
+        pointer_format: str = "video",
         **kwargs,
     ) -> None:
         super().__init__()
@@ -218,6 +220,9 @@ class Point3RLLMv2(lmms):
         if rope_mode != "none":
             eval_logger.info(f"RoPE mode for pointers: {rope_mode}, position_range={rope_position_range}")
 
+        # Pointer format config
+        self.pointer_format = pointer_format
+
         # Load Point3R-enhanced model
         eval_logger.info("Using Qwen3VLForConditionalGenerationWithPoint3R")
 
@@ -255,6 +260,7 @@ class Point3RLLMv2(lmms):
             tokenizer=base_processor.tokenizer,
             video_processor=base_processor.video_processor,
             chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+            pointer_format=self.pointer_format,
         )
         self._tokenizer = self.processor.tokenizer
 

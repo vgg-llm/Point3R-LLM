@@ -342,8 +342,9 @@ class Qwen3VLProcessorWithPoint3R(Qwen3VLProcessor):
             in a chat into a tokenizable string.
     """
 
-    def __init__(self, image_processor=None, tokenizer=None, video_processor=None, chat_template=None, **kwargs):
+    def __init__(self, image_processor=None, tokenizer=None, video_processor=None, chat_template=None, pointer_format="video", **kwargs):
         self.pointer_token = "<|pointer_pad|>"
+        self.pointer_format = pointer_format
         super().__init__(image_processor, tokenizer, video_processor, chat_template=chat_template, **kwargs)
         self.tokenizer.add_special_tokens({"additional_special_tokens": [self.pointer_token]})
         # Store the pointer token ID for later use
@@ -454,47 +455,64 @@ class Qwen3VLProcessorWithPoint3R(Qwen3VLProcessor):
 
                 text[i] = text[i].replace("<|placeholder|>", self.video_token)
 
-        # Handle pointer tokens: grouped by timestamp (like video frames)
+        # Handle pointer tokens based on pointer_format
         if pointer_timestamps is not None:
-            # Auto-select FPS: 24.0 when frames_indices maps to original frame
-            # numbers (like video), 1.0 when using raw sampled-frame indices
-            if pointer_fps is not None:
-                fps = pointer_fps
-            elif frames_indices is not None:
-                fps = 24.0
-            else:
-                fps = 1.0
-            unique_timestamps = pointer_timestamps.unique(sorted=True)
+            pointer_num_tok = pointer_timestamps.shape[0]
 
-            # Build grouped placeholder: <time><vision_start><pointer>*N<vision_end> per group
-            pointer_placeholder = ""
-            for ts in unique_timestamps:
-                count = (pointer_timestamps == ts).sum().item()
-                ts_val = ts.item()
-
-                # Convert frame index to seconds
-                if frames_indices is not None and int(ts_val) < len(frames_indices):
-                    time_seconds = frames_indices[int(ts_val)] / fps
+            if self.pointer_format == "video":
+                # Video format: grouped by timestamp (like video frames)
+                # Auto-select FPS: 24.0 when frames_indices maps to original frame
+                # numbers (like video), 1.0 when using raw sampled-frame indices
+                if pointer_fps is not None:
+                    fps = pointer_fps
+                elif frames_indices is not None:
+                    fps = 24.0
                 else:
-                    time_seconds = ts_val / fps
+                    fps = 1.0
+                unique_timestamps = pointer_timestamps.unique(sorted=True)
 
-                pointer_placeholder += f"<{time_seconds:.1f} seconds>"
-                pointer_placeholder += (
-                    self.vision_start_token + "<|placeholder|>" * count + self.vision_end_token
-                )
+                # Build grouped placeholder: <time><vision_start><pointer>*N<vision_end> per group
+                pointer_placeholder = ""
+                for ts in unique_timestamps:
+                    count = (pointer_timestamps == ts).sum().item()
+                    ts_val = ts.item()
 
-            for i in range(len(text)):
-                wrapped = f"{self.vision_start_token}{self.pointer_token}{self.vision_end_token}"
-                if wrapped in text[i]:
-                    text[i] = text[i].replace(wrapped, pointer_placeholder, 1)
-                elif self.pointer_token in text[i]:
-                    text[i] = text[i].replace(self.pointer_token, pointer_placeholder, 1)
-                text[i] = text[i].replace("<|placeholder|>", self.pointer_token)
+                    # Convert frame index to seconds
+                    if frames_indices is not None and int(ts_val) < len(frames_indices):
+                        time_seconds = frames_indices[int(ts_val)] / fps
+                    else:
+                        time_seconds = ts_val / fps
+
+                    pointer_placeholder += f"<{time_seconds:.1f} seconds>"
+                    pointer_placeholder += (
+                        self.vision_start_token + "<|placeholder|>" * count + self.vision_end_token
+                    )
+
+                for i in range(len(text)):
+                    wrapped = f"{self.vision_start_token}{self.pointer_token}{self.vision_end_token}"
+                    if wrapped in text[i]:
+                        text[i] = text[i].replace(wrapped, pointer_placeholder, 1)
+                    elif self.pointer_token in text[i]:
+                        text[i] = text[i].replace(self.pointer_token, pointer_placeholder, 1)
+                    text[i] = text[i].replace("<|placeholder|>", self.pointer_token)
+            else:
+                # Image format: flat expansion (all pointer tokens in a single block)
+                for i in range(len(text)):
+                    while self.pointer_token in text[i]:
+                        text[i] = text[i].replace(
+                            self.pointer_token,
+                            "<|placeholder|>" * pointer_num_tok,
+                            1,
+                        )
+                    text[i] = text[i].replace("<|placeholder|>", self.pointer_token)
 
         return_tensors = output_kwargs["text_kwargs"].pop("return_tensors", None)
         return_mm_token_type_ids = output_kwargs["text_kwargs"].pop("return_mm_token_type_ids", None)
         text_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
-        self._check_special_mm_tokens(text, text_inputs, modalities=["image", "video", "pointer"])
+        if self.pointer_format == "video" and pointer_timestamps is not None:
+            self._check_special_mm_tokens(text, text_inputs, modalities=["image", "video", "pointer"])
+        else:
+            self._check_special_mm_tokens(text, text_inputs, modalities=["image", "video"])
 
         if return_mm_token_type_ids:
             array_ids = np.array(text_inputs["input_ids"])

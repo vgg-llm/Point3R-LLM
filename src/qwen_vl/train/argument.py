@@ -52,6 +52,12 @@ class ModelArguments:
         metadata={"help": "Whether to train the pointer position encoder"}
     )
 
+    # Pointer token format
+    pointer_format: str = field(
+        default="video",
+        metadata={"help": "Format for pointer tokens: 'image' (flat, no vision markers) or 'video' (grouped by timestamp with vision markers)"}
+    )
+
     # RoPE ablation parameters for pointer tokens
     rope_mode: str = field(
         default="none",
