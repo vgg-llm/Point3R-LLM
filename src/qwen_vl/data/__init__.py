@@ -93,8 +93,20 @@ BEACON3D_POINT3R = {
     "tag": "3d"
 }
 
+VSIBENCH = {
+    "annotation_path": "data/train/vsibench_train.json",
+    "data_path": "data/media",
+    "tag": "3d"
+}
+
 VSIBENCH_POINT3R = {
     "annotation_path": "data/train/vsibench_train_point3r.json",
+    "data_path": "data/media",
+    "tag": "3d"
+}
+
+VSTIBENCH = {
+    "annotation_path": "data/train/vstibench_train.json",
     "data_path": "data/media",
     "tag": "3d"
 }
@@ -122,7 +134,9 @@ data_dict = {
     "beacon3d_point3r": BEACON3D_POINT3R,
     "spar_234k": SPAR_234K,
     "llava_hound_64k": LLAVA_HOUND_64K,
+    "vsibench": VSIBENCH,
     "vsibench_point3r": VSIBENCH_POINT3R,
+    "vstibench": VSTIBENCH,
     "vstibench_point3r": VSTIBENCH_POINT3R,
 }
 
