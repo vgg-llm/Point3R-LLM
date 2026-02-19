@@ -53,8 +53,8 @@ def convert_sample(sample, scannet_base, nframes=32):
     if image_paths is None:
         return None
 
-    # Build image tokens (like scanrefer's process_data_item)
-    image_tokens = "".join([f"Frame-{i}: <image>" for i in range(len(image_paths))])
+    # Build image tokens
+    image_tokens = "<image>" * len(image_paths)
 
     # Process conversations
     new_conversations = []
