@@ -588,10 +588,20 @@ class Point3RLLMv2(lmms):
 
             # Prepare inputs
             if self.use_pointer_memory and pointer_data is not None:
+                # Fallback: create zero timestamps if missing from preprocessed data
+                pointer_timestamps = pointer_data.get('pointer_timestamps')
+                if pointer_timestamps is None:
+                    num_pointers = pointer_data['pointer_memory_embeds'].shape[0]
+                    pointer_timestamps = torch.zeros(num_pointers, dtype=torch.long)
+                    eval_logger.warning(
+                        f"pointer_timestamps missing from preprocessed data, "
+                        f"using zero tensor of length {num_pointers}"
+                    )
+
                 # Use pointer processing
                 inputs = self.processor(
                     text=text,
-                    pointer_timestamps=pointer_data.get('pointer_timestamps'),
+                    pointer_timestamps=pointer_timestamps,
                     frames_indices=pointer_data.get('frames_indices'),
                     padding=True,
                     return_tensors="pt",
