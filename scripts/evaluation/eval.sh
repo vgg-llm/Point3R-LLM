@@ -41,6 +41,7 @@ MEMORY_FUSION_METHOD="${MEMORY_FUSION_METHOD:-add}"
 ROPE_MODE="${ROPE_MODE:-}"
 ROPE_POSITION_RANGE="${ROPE_POSITION_RANGE:-}"
 POINTER_FORMAT="${POINTER_FORMAT:-}"
+POINTER_DIR_NAME="${POINTER_DIR_NAME:-}"
 
 # --- Extra model args passthrough ---
 EXTRA_MODEL_ARGS="${EXTRA_MODEL_ARGS:-}"
@@ -78,6 +79,7 @@ model_args_str="${model_args_str},memory_fusion_method=${MEMORY_FUSION_METHOD}"
 [[ -n "$ROPE_MODE" ]]           && model_args_str="${model_args_str},rope_mode=${ROPE_MODE}"
 [[ -n "$ROPE_POSITION_RANGE" ]] && model_args_str="${model_args_str},rope_position_range=${ROPE_POSITION_RANGE}"
 [[ -n "$POINTER_FORMAT" ]]      && model_args_str="${model_args_str},pointer_format=${POINTER_FORMAT}"
+[[ -n "$POINTER_DIR_NAME" ]]   && model_args_str="${model_args_str},pointer_dir_name=${POINTER_DIR_NAME}"
 
 # --- Handle scanrefer special case ---
 if [[ "$BENCHMARKS" == *"scanrefer"* ]]; then
@@ -119,6 +121,7 @@ export MEMORY_FUSION_METHOD="${MEMORY_FUSION_METHOD}"
 export ROPE_MODE="${ROPE_MODE}"
 export ROPE_POSITION_RANGE="${ROPE_POSITION_RANGE}"
 export POINTER_FORMAT="${POINTER_FORMAT}"
+export POINTER_DIR_NAME="${POINTER_DIR_NAME}"
 export EXTRA_MODEL_ARGS="${EXTRA_MODEL_ARGS}"
 
 bash scripts/evaluation/eval.sh

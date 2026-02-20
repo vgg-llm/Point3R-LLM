@@ -267,6 +267,8 @@ def train(attn_implementation="flash_attention_2"):
 
             # Pass pointer format to data pipeline
             data_args.pointer_format = getattr(model_args, "pointer_format", "video")
+            # Pass pointer directory name override to data pipeline
+            data_args.pointer_dir_name = getattr(model_args, "pointer_dir_name", None)
         elif model_args.use_geometry_encoder:
             from qwen_vl.model.qwen3_vl.modeling_qwen_vggt import Qwen3VLForConditionalGenerationWithVGGT
 

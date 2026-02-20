@@ -46,6 +46,9 @@ TUNE_ROPE3D_CONTINUOUS="${TUNE_ROPE3D_CONTINUOUS:-}"
 # --- Pointer Format (optional) ---
 POINTER_FORMAT="${POINTER_FORMAT:-}"
 
+# --- Pointer Data Directory Override (optional) ---
+POINTER_DIR_NAME="${POINTER_DIR_NAME:-}"
+
 # --- Geometry Encoder (optional, for VGGT) ---
 USE_GEOMETRY_ENCODER="${USE_GEOMETRY_ENCODER:-False}"
 GEOMETRY_ENCODER_TYPE="${GEOMETRY_ENCODER_TYPE:-}"
@@ -121,6 +124,7 @@ export ROPE_POSITION_RANGE="${ROPE_POSITION_RANGE}"
 export USE_POINTER_POSITION_ENCODING="${USE_POINTER_POSITION_ENCODING}"
 export TUNE_ROPE3D_CONTINUOUS="${TUNE_ROPE3D_CONTINUOUS}"
 export POINTER_FORMAT="${POINTER_FORMAT}"
+export POINTER_DIR_NAME="${POINTER_DIR_NAME}"
 export USE_GEOMETRY_ENCODER="${USE_GEOMETRY_ENCODER}"
 export GEOMETRY_ENCODER_TYPE="${GEOMETRY_ENCODER_TYPE}"
 export GEOMETRY_ENCODER_PATH="${GEOMETRY_ENCODER_PATH}"
@@ -204,6 +208,7 @@ CMD=(
 [[ -n "$USE_POINTER_POSITION_ENCODING" ]] && CMD+=(--use_pointer_position_encoding "$USE_POINTER_POSITION_ENCODING")
 [[ -n "$TUNE_ROPE3D_CONTINUOUS" ]]        && CMD+=(--tune_rope3d_continuous "$TUNE_ROPE3D_CONTINUOUS")
 [[ -n "$POINTER_FORMAT" ]]                && CMD+=(--pointer_format "$POINTER_FORMAT")
+[[ -n "$POINTER_DIR_NAME" ]]             && CMD+=(--pointer_dir_name "$POINTER_DIR_NAME")
 [[ -n "$GEOMETRY_ENCODER_TYPE" ]]         && CMD+=(--geometry_encoder_type "$GEOMETRY_ENCODER_TYPE")
 [[ -n "$GEOMETRY_ENCODER_PATH" ]]         && CMD+=(--geometry_encoder_path "$GEOMETRY_ENCODER_PATH")
 [[ -n "$FEATURE_FUSION_METHOD" ]]         && CMD+=(--feature_fusion_method "$FEATURE_FUSION_METHOD")

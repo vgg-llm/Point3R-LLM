@@ -58,6 +58,13 @@ class ModelArguments:
         metadata={"help": "Format for pointer tokens: 'image' (flat, no vision markers) or 'video' (grouped by timestamp with vision markers)"}
     )
 
+    # Pointer data directory override
+    pointer_dir_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "Override 'pointer_memory' directory name in pointer data paths "
+                          "(e.g., 'pointer_memory_qwen3vl_lambda0.0')"}
+    )
+
     # RoPE ablation parameters for pointer tokens
     rope_mode: str = field(
         default="none",

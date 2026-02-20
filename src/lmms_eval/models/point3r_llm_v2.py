@@ -133,6 +133,8 @@ class Point3RLLMv2(lmms):
         rope_position_range: int = 128,
         # Pointer token format
         pointer_format: str = "video",
+        # Pointer data directory override
+        pointer_dir_name: Optional[str] = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -173,6 +175,7 @@ class Point3RLLMv2(lmms):
         self.extract_batch_size = extract_batch_size
         self.base_dir = base_dir
         self.merge_memory_feat = merge_memory_feat
+        self.pointer_dir_name = pointer_dir_name
 
         # Cache for pre-loaded pointer data
         self.pointer_data_cache = {}
@@ -506,6 +509,7 @@ class Point3RLLMv2(lmms):
                                 pointer_data_path=pointer_data_path,
                                 base_dir=self.base_dir,
                                 max_pointer_tokens=30000,
+                                pointer_dir_name=self.pointer_dir_name,
                             )
                             eval_logger.debug(f"Loaded pointer data: {pointer_data['num_pointers']} tokens")
                         except FileNotFoundError as e:

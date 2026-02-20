@@ -26,6 +26,7 @@ def load_pointer_data(
     pointer_data_path: str,
     base_dir: Optional[str] = None,
     max_pointer_tokens: int = 8000,
+    pointer_dir_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Load pointer memory data from a .pt file.
 
@@ -36,6 +37,9 @@ def load_pointer_data(
         pointer_data_path: Path to .pt file (can be relative or absolute)
         base_dir: Base directory to prepend if path is relative
         max_pointer_tokens: Maximum number of pointer tokens (truncate if exceeded)
+        pointer_dir_name: If set, replace "pointer_memory" in the path with this value.
+            Allows switching to alternative pre-computed pointer data directories
+            (e.g., "pointer_memory_qwen3vl_lambda0.0") without modifying annotation files.
 
     Returns:
         Dictionary with keys:
@@ -54,6 +58,10 @@ def load_pointer_data(
         full_path = os.path.join(base_dir, pointer_data_path)
     else:
         full_path = pointer_data_path
+
+    # Substitute pointer directory name if specified
+    if pointer_dir_name is not None:
+        full_path = full_path.replace("pointer_memory", pointer_dir_name)
 
     if not os.path.exists(full_path):
         raise FileNotFoundError(f"Pointer data file not found: {full_path}")
