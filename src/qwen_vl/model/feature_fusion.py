@@ -285,8 +285,6 @@ class PointerPositionEncoder(nn.Module):
         self.pos_projector = nn.Sequential(
             nn.Linear(coord_dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
             nn.Linear(hidden_dim, out_dim)
         )
 
