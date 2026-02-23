@@ -118,6 +118,7 @@ class Point3RConfig(PretrainedConfig):
         depth_head=False,
         pose_conf_head=False,
         pose_head=False,
+        use_merge=True,
         **croco_kwargs,
     ):
         super().__init__()
@@ -134,6 +135,7 @@ class Point3RConfig(PretrainedConfig):
         self.depth_head = depth_head
         self.pose_conf_head = pose_conf_head
         self.pose_head = pose_head
+        self.use_merge = use_merge
         self.croco_kwargs = croco_kwargs
 
 # thanks to CUT3R (https://github.com/CUT3R)
@@ -240,6 +242,7 @@ class Point3R(CroCoNet):
         super().__init__(croco_cfg)
         self.dec_num_heads = self.croco_args["dec_num_heads"]
         self.pose_head_flag = config.pose_head
+        self.use_merge = config.use_merge
         if self.pose_head_flag:
             self.pose_token = nn.Parameter(
                 torch.randn(1, 1, self.dec_embed_dim) * 0.02, requires_grad=True)
@@ -732,6 +735,13 @@ class Point3R(CroCoNet):
         feat_i,
         dec_i,
         shape_i,
+        memory_aligned_image_embeds=None,
+        image_embeds_i=None,
+        deepstack_memory_aligned_embeds=None,
+        deepstack_image_embeds_i=None,
+        memory_aligned_timestamps=None,
+        lambda_decay=1.0,
+        max_memory_tokens=None,
         ):
         bs, img_h, img_w, _ = pts3d.shape
         img_pos_len_h = img_h // 16
@@ -740,7 +750,7 @@ class Point3R(CroCoNet):
         img_pos = img_pos.unfold(2, 16, 16)
         img_pos = img_pos.unfold(3, 16, 16)
         img_pos = img_pos.reshape(bs, 3, img_pos_len_h, img_pos_len_w, -1).mean(dim=-1).permute(0, 2, 3, 1).reshape(bs, -1, 3)
-        
+
         feat_key = self.memory_attn_head(torch.cat((feat_i, dec_i), dim=-1))
         feat_pts = self.enc_pts_value(pts3d, shape_i)
         memory_add = self.decoder_embed_memory(feat_key+feat_pts)
@@ -750,12 +760,47 @@ class Point3R(CroCoNet):
             memory_feat = memory_add
             init_memory_feat = memory_feat.clone().detach()
             chosen_pts = img_pos
+            # Initialize image embeds, deepstack, and timestamps
+            memory_aligned_image_embeds = image_embeds_i
+            deepstack_memory_aligned_embeds = deepstack_image_embeds_i
+            num_tokens = memory_add.shape[1]
+            memory_aligned_timestamps = torch.zeros(bs, num_tokens, dtype=torch.long, device=memory_add.device)
         else:
             memory_feat = torch.cat((memory_feat, memory_add), dim=1)
             init_memory_feat = torch.cat((init_memory_feat, memory_add.clone().detach()), dim=1)
             chosen_pts = torch.cat((memory_pos, img_pos), dim=1)
-          
-        return memory_feat, chosen_pts, init_memory_feat, img_pos
+            # Concatenate image embeds
+            if image_embeds_i is not None and memory_aligned_image_embeds is not None:
+                memory_aligned_image_embeds = torch.cat((memory_aligned_image_embeds, image_embeds_i), dim=1)
+            # Concatenate deepstack per layer
+            if deepstack_image_embeds_i is not None and deepstack_memory_aligned_embeds is not None:
+                deepstack_memory_aligned_embeds = [
+                    torch.cat((existing, new), dim=1)
+                    for existing, new in zip(deepstack_memory_aligned_embeds, deepstack_image_embeds_i)
+                ]
+            # Concatenate timestamps
+            if memory_aligned_timestamps is not None:
+                num_new = memory_add.shape[1]
+                new_timestamps = torch.full((bs, num_new), i, dtype=torch.long, device=memory_add.device)
+                memory_aligned_timestamps = torch.cat((memory_aligned_timestamps, new_timestamps), dim=1)
+
+            # Prune if over budget
+            if max_memory_tokens is not None and memory_feat.shape[1] > max_memory_tokens:
+                perm = torch.randperm(memory_feat.shape[1], device=memory_feat.device)
+                keep = perm[:max_memory_tokens]
+                keep, _ = torch.sort(keep)
+                memory_feat = memory_feat[:, keep]
+                init_memory_feat = init_memory_feat[:, keep]
+                chosen_pts = chosen_pts[:, keep]
+                if memory_aligned_image_embeds is not None:
+                    memory_aligned_image_embeds = memory_aligned_image_embeds[:, keep]
+                if deepstack_memory_aligned_embeds is not None:
+                    deepstack_memory_aligned_embeds = [layer[:, keep] for layer in deepstack_memory_aligned_embeds]
+                if memory_aligned_timestamps is not None:
+                    memory_aligned_timestamps = memory_aligned_timestamps[:, keep]
+
+        return memory_feat, chosen_pts, init_memory_feat, img_pos, \
+               memory_aligned_image_embeds, deepstack_memory_aligned_embeds, memory_aligned_timestamps
 
     def _forward_addmemory_merge(
         self,
@@ -941,8 +986,7 @@ class Point3R(CroCoNet):
                 if max_memory_tokens is not None and memory_feat_j.shape[0] > max_memory_tokens:
                     perm = torch.randperm(memory_feat_j.shape[0], device=memory_feat_j.device)
                     keep_indices = perm[:max_memory_tokens]
-                    keep_indices, _ = torch.sort(keep_indices)  # preserve spatial ordering for RoPE3D
-
+                    keep_indices, _ = torch.sort(keep_indices)
                     memory_feat_j = memory_feat_j[keep_indices]
                     memory_pos_j = memory_pos_j[keep_indices]
                     timestamps_j = timestamps_j[keep_indices]
@@ -1150,7 +1194,7 @@ class Point3R(CroCoNet):
 
         return ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds, memory_aligned_timestamps
 
-    def _forward(self, views, point3r_tag=False):
+    def _forward(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None, lambda_decay=1.0, max_memory_tokens=None):
         shape, feat_ls, pos = self._encode_views(views)
         feat = feat_ls[-1]
         memory_feat, _ = self._init_memory(feat[0], pos[0])
@@ -1159,11 +1203,54 @@ class Point3R(CroCoNet):
         ress = []
         pos_decode_img = None
         pos_decode_memory = None
-        
+        memory_aligned_image_embeds = None
+        deepstack_memory_aligned_embeds = None
+        memory_aligned_timestamps = None
+
+        # Prepare per-view image embeds for lazy interpolation
+        _interp_target_shape = None
+        _image_embeds_split = None
+        _deepstack_splits = None
+        if image_embeds is not None and grid_thw_images is not None:
+            img_h, img_w = shape[0][0].tolist()
+            img_pos_len_h = img_h // 16
+            img_pos_len_w = img_w // 16
+            _interp_target_shape = (img_pos_len_h, img_pos_len_w)
+            spatial_merge_size = 2
+            h_merged = grid_thw_images[:, 1] // spatial_merge_size
+            w_merged = grid_thw_images[:, 2] // spatial_merge_size
+            patches_per_image = (h_merged * w_merged).tolist()
+            _image_embeds_split = list(torch.split(image_embeds, [int(p) for p in patches_per_image], dim=0))
+            if deepstack_image_embeds is not None:
+                _deepstack_splits = [
+                    list(torch.split(layer_embeds, [int(p) for p in patches_per_image], dim=0))
+                    for layer_embeds in deepstack_image_embeds
+                ]
+
         for i in range(len(views)):
             feat_i = feat[i]
             pos_i = pos[i]
-            
+
+            # Interpolate current view's embeddings on-the-fly
+            if _image_embeds_split is not None:
+                img_emb_i = self._interpolate_image_embeds_to_point3r_grid(
+                    _image_embeds_split[i],
+                    grid_thw_images[i:i+1],
+                    target_shape=_interp_target_shape
+                )
+            else:
+                img_emb_i = None
+            deepstack_emb_i = None
+            if _deepstack_splits is not None:
+                deepstack_emb_i = [
+                    self._interpolate_image_embeds_to_point3r_grid(
+                        _deepstack_splits[layer_idx][i],
+                        grid_thw_images[i:i+1],
+                        target_shape=_interp_target_shape
+                    )
+                    for layer_idx in range(len(_deepstack_splits))
+                ]
+
             mask_memory = None
 
             if self.pose_head_flag:
@@ -1203,10 +1290,10 @@ class Point3R(CroCoNet):
 
             update_mask_memory = torch.tensor([False]*memory_feat.shape[0], device=memory_feat.device)
             update_mask_memory = update_mask_memory[:, None, None].float()
-            memory_feat = new_memory_feat * update_mask_memory + memory_feat * (1 - update_mask_memory)  
+            memory_feat = new_memory_feat * update_mask_memory + memory_feat * (1 - update_mask_memory)
             update_mask_mem = torch.tensor([True]*mem.shape[0], device=mem.device)
             update_mask_mem = update_mask_mem[:, None, None].float()
-            mem = new_mem * update_mask_mem + mem * (1 - update_mask_mem)  
+            mem = new_mem * update_mask_mem + mem * (1 - update_mask_mem)
 
             if point3r_tag:
                 this_pts3d = res['pts3d_in_other_view'].clone().detach()
@@ -1215,7 +1302,9 @@ class Point3R(CroCoNet):
                         pos_decode_memory = pos_decode_memory.clone().detach()
                     else:
                         pos_decode_memory = [pos_decode_memory_in.clone().detach() for pos_decode_memory_in in pos_decode_memory]
-                memory_feat, pos_decode_memory, init_memory_feat, pos_decode_img = self._forward_addmemory(
+                memory_feat, pos_decode_memory, init_memory_feat, pos_decode_img, \
+                    memory_aligned_image_embeds, deepstack_memory_aligned_embeds, \
+                    memory_aligned_timestamps = self._forward_addmemory(
                     i,
                     pts3d=this_pts3d,
                     init_memory_feat=init_memory_feat,
@@ -1224,12 +1313,25 @@ class Point3R(CroCoNet):
                     feat_i=feat_i.clone().detach(),
                     dec_i=dec[-1][:, 1:].clone().detach(),
                     shape_i=views[i]['true_shape'],
+                    memory_aligned_image_embeds=memory_aligned_image_embeds,
+                    image_embeds_i=img_emb_i,
+                    deepstack_memory_aligned_embeds=deepstack_memory_aligned_embeds,
+                    deepstack_image_embeds_i=deepstack_emb_i,
+                    memory_aligned_timestamps=memory_aligned_timestamps,
+                    lambda_decay=lambda_decay,
+                    max_memory_tokens=max_memory_tokens,
                 )
 
-        return ress, views
+            # Free intermediate tensors to reduce GPU memory pressure
+            del dec, head_input, new_memory_feat
+            if i % 50 == 0 and i > 0:
+                torch.cuda.empty_cache()
+
+        return ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds, memory_aligned_timestamps
 
     def forward(self, views, point3r_tag=False, image_embeds=None, grid_thw_images=None, deepstack_image_embeds=None, lambda_decay=1.0, max_memory_tokens=None):
-        ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds, memory_aligned_timestamps = self._forward_merge(
+        forward_fn = self._forward_merge if self.use_merge else self._forward
+        ress, views, memory_aligned_image_embeds, pos_decode_memory, memory_feat, deepstack_memory_aligned_embeds, memory_aligned_timestamps = forward_fn(
             views,
             point3r_tag=point3r_tag,
             image_embeds=image_embeds,
@@ -1247,8 +1349,5 @@ class Point3R(CroCoNet):
             deepstack_memory_aligned_embeds=deepstack_memory_aligned_embeds,
             memory_aligned_timestamps=memory_aligned_timestamps
         )
-        # stage1
-        # ress, views = self._forward(views, point3r_tag=point3r_tag)
-        # return ARCroco3DStereoOutput(ress=ress, views=views)
 
     

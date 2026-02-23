@@ -71,6 +71,8 @@ def main():
                         help='Total number of chunks')
     parser.add_argument('--smoke-test', action='store_true',
                         help='Run smoke test on only the first scene')
+    parser.add_argument('--no-merge', action='store_true', default=False,
+                        help='Disable spatial merging of memory tokens (use simple concatenation)')
     args = parser.parse_args()
 
     lambda_decay = args.lambda_decay
@@ -96,7 +98,7 @@ def main():
         print(f"Total scenes in dataset: {total_scenes}")
 
     # Load models - will use CUDA_VISIBLE_DEVICES=X so it sees only one GPU as cuda:0
-    model, processor, min_pixels, max_pixels, point3r_model = load_models(device=None, model_path=args.model_path)
+    model, processor, min_pixels, max_pixels, point3r_model = load_models(device=None, model_path=args.model_path, use_merge=not args.no_merge)
 
     # Process this GPU's subset with progress bar
     desc = "Smoke Test" if args.smoke_test else f"Chunk {args.curr_chunk}/{args.total_chunks}"

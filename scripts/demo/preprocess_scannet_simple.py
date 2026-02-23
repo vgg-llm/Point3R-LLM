@@ -43,6 +43,8 @@ def main():
                         help='Number of images to uniformly sample per scene (default: 32)')
     parser.add_argument('--model-path', type=str, default="Qwen/Qwen3-VL-4B-Instruct",
                         help='Output directory name under data/media/scannet/ (default: auto-generated from lambda value)')
+    parser.add_argument('--no-merge', action='store_true', default=False,
+                        help='Disable spatial merging of memory tokens (use simple concatenation)')
     args = parser.parse_args()
 
     gpu_id = args.gpu_id
@@ -82,7 +84,7 @@ def main():
     print(f"Total scenes in dataset: {total_scenes}")
 
     # Load models - will use CUDA_VISIBLE_DEVICES=X so it sees only one GPU as cuda:0
-    model, processor, min_pixels, max_pixels, point3r_model = load_models(device=None, model_path=args.model_path)
+    model, processor, min_pixels, max_pixels, point3r_model = load_models(device=None, model_path=args.model_path, use_merge=not args.no_merge)
 
     # Process this GPU's subset with progress bar
     for input_images_dir, pointer_data_path in tqdm(
