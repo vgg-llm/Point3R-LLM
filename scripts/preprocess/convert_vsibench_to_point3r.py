@@ -95,14 +95,14 @@ def main():
         help="Number of pointer tokens per sample",
     )
     parser.add_argument(
-        "--include_scannetpp",
+        "--exclude_scannetpp",
         action="store_true",
-        help="Include ScanNet++ data (requires scannetpp/pointer_memory/)",
+        help="Exclude ScanNet++ data (included by default)",
     )
     parser.add_argument(
-        "--include_arkitscenes",
+        "--exclude_arkitscenes",
         action="store_true",
-        help="Include ARKitScenes data (requires arkitscenes/pointer_memory/)",
+        help="Exclude ARKitScenes data (included by default)",
     )
     parser.add_argument(
         "--output",
@@ -115,24 +115,22 @@ def main():
     base = Path("data")
     source_dir = base / "VLM-3R-DATA" / "vsibench_train"
 
-    # Determine which data sources to include
-    enabled_sources = {"scannet"}  # Always include ScanNet
-
-    if args.include_scannetpp:
-        enabled_sources.add("scannetpp")
-    if args.include_arkitscenes:
-        enabled_sources.add("arkitscenes")
+    # Determine which data sources to include (all enabled by default)
+    enabled_sources = {"scannet", "scannetpp", "arkitscenes"}
+    if args.exclude_scannetpp:
+        enabled_sources.discard("scannetpp")
+    if args.exclude_arkitscenes:
+        enabled_sources.discard("arkitscenes")
 
     print(f"Enabled data sources: {enabled_sources}")
 
     # Source files to process
     source_files = [
         "merged_qa_scannet_train.json",
-        "merged_qa_scannetpp_train.json",
         "merged_qa_route_plan_train.json",  # Contains scannet, scannetpp, arkitscenes
     ]
 
-    if args.include_scannetpp:
+    if "scannetpp" in enabled_sources:
         source_files.append("merged_qa_scannetpp_train.json")
 
     # Collect and convert all samples

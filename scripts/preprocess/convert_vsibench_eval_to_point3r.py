@@ -157,14 +157,14 @@ def main():
         help="Number of pointer tokens per sample",
     )
     parser.add_argument(
-        "--include_scannetpp",
+        "--exclude_scannetpp",
         action="store_true",
-        help="Include ScanNet++ data",
+        help="Exclude ScanNet++ data (included by default)",
     )
     parser.add_argument(
-        "--include_arkitscenes",
+        "--exclude_arkitscenes",
         action="store_true",
-        help="Include ARKitScenes data",
+        help="Exclude ARKitScenes data (included by default)",
     )
     parser.add_argument(
         "--hf_dataset",
@@ -180,12 +180,12 @@ def main():
     )
     args = parser.parse_args()
 
-    # Determine which data sources to include
-    enabled_sources = {"scannet"}
-    if args.include_scannetpp:
-        enabled_sources.add("scannetpp")
-    if args.include_arkitscenes:
-        enabled_sources.add("arkitscenes")
+    # Determine which data sources to include (all enabled by default)
+    enabled_sources = {"scannet", "scannetpp", "arkitscenes"}
+    if args.exclude_scannetpp:
+        enabled_sources.discard("scannetpp")
+    if args.exclude_arkitscenes:
+        enabled_sources.discard("arkitscenes")
 
     print(f"Enabled data sources: {enabled_sources}")
 

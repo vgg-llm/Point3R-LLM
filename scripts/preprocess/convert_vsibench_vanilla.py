@@ -5,7 +5,7 @@ Samples frames from posed_images directories instead of using video files.
 
 Usage:
     python scripts/preprocess/convert_vsibench_vanilla.py
-    python scripts/preprocess/convert_vsibench_vanilla.py --nframes 8 --include_scannetpp --include_arkitscenes
+    python scripts/preprocess/convert_vsibench_vanilla.py --nframes 8 --exclude_scannetpp --exclude_arkitscenes
 """
 
 import json
@@ -157,9 +157,9 @@ def main():
         help="Base dir for scannet (default: data/media, images at {base}/scannet/posed_images/{scene}/)",
     )
     parser.add_argument(
-        "--include_scannetpp",
+        "--exclude_scannetpp",
         action="store_true",
-        help="Include ScanNet++ data",
+        help="Exclude ScanNet++ data (included by default)",
     )
     parser.add_argument(
         "--scannetpp_base",
@@ -168,9 +168,9 @@ def main():
         help="Base dir for scannetpp (default: /data/llm_data, images at {base}/scannetpp/data/data/{scene}/dslr/resized_undistorted_images/)",
     )
     parser.add_argument(
-        "--include_arkitscenes",
+        "--exclude_arkitscenes",
         action="store_true",
-        help="Include ARKitScenes data",
+        help="Exclude ARKitScenes data (included by default)",
     )
     parser.add_argument(
         "--arkitscenes_base",
@@ -189,13 +189,12 @@ def main():
     base = Path("data")
     source_dir = base / "VLM-3R-DATA" / "vsibench_train"
 
-    # Determine which data sources to include
-    enabled_sources = {"scannet"}  # Always include ScanNet
-
-    if args.include_scannetpp:
-        enabled_sources.add("scannetpp")
-    if args.include_arkitscenes:
-        enabled_sources.add("arkitscenes")
+    # Determine which data sources to include (all enabled by default)
+    enabled_sources = {"scannet", "scannetpp", "arkitscenes"}
+    if args.exclude_scannetpp:
+        enabled_sources.discard("scannetpp")
+    if args.exclude_arkitscenes:
+        enabled_sources.discard("arkitscenes")
 
     # Build image base directories
     image_bases = {
@@ -215,7 +214,7 @@ def main():
         "merged_qa_route_plan_train.json",  # Contains scannet, scannetpp, arkitscenes
     ]
 
-    if args.include_scannetpp:
+    if "scannetpp" in enabled_sources:
         source_files.append("merged_qa_scannetpp_train.json")
 
     # Collect and convert all samples
