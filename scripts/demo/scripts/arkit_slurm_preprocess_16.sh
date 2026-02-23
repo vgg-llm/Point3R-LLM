@@ -24,7 +24,7 @@ mkdir -p logs
 echo "Submitting jobs to SLURM queue..."
 for task_id in $(seq 0 $((TOTAL_TASKS - 1))); do
     echo "  - Submitting task $task_id/$((TOTAL_TASKS-1))..."
-    sbatch --job-name=arkit_${task_id} \
+    sbatch --job-name=arkit_${task_id}_preprocessing_for_Qwen-Point3R \
            --output=logs/arkit_chunk_${task_id}.log \
            --error=logs/arkit_chunk_${task_id}.log \
            --partition=cms_cvlab \

@@ -23,7 +23,7 @@ CUDA_VISIBLE_DEVICES=0 python3 scripts/demo/preprocess_arkit_simple.py \
     --total_chunks $TOTAL_TASKS \
     --save-path $SAVE_PATH \
     --sample-ct $SAMPLE_CT \
-    --metadata-path "./scripts/demo/metadata/arkit_vsi.txt"
+    --metadata-path "./scripts/demo/metadata/arkit_combined.txt"
 
 
 echo "Preprocessing complete!"
