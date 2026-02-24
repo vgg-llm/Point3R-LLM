@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=Point3R-LLM-ablations-scan2cap_point3r_7_memefeat_hierarchical_PE
-#SBATCH -o sbatch_log/scan2cap_point3r_7_memefeat_hierarchical_PE.%j.out
+#SBATCH --job-name=Point3R-LLM-8b_memfeat_appearance_order_experiment
+#SBATCH -o sbatch_log/appr_order_exp-8b-memfeat.%j.out
 #SBATCH --partition=cms_cvlab
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1
@@ -9,23 +9,20 @@
 
 source venv/bin/activate
 
-export EXP_NAME="scan2cap_point3r_7_memefeat_hierarchical_PE"
+export EXP_NAME="appr_order_exp"
 export MODEL_PATH="Qwen/Qwen3-VL-8B-Instruct"
-export DATASETS="scan2cap_point3r"
+export DATASETS="spar_subset_point3r"
 
 # Memory features
 export MERGE_MEMORY_FEAT="True"
 export MEMORY_FUSION_METHOD="add"
-export TUNE_MEMORY_FEATURE_PROJECTOR="True"
-export ROPE_MODE="continuous"
-export TUNE_ROPE3D_CONTINUOUS="True"
 
 # Evaluation
-export BENCHMARKS="scan2cap_point3r"
+export BENCHMARKS="spar_subset_point3r,vsibench_point3r"
 export EVAL_MODEL_TYPE="point3r_llm_v2"
 
 # --- Train ---
-bash scripts/train/train.sh
+# bash scripts/train/train.sh
 
 # --- Evaluate ---
 export MODEL_PATH="./outputs/${EXP_NAME}"
