@@ -8,6 +8,8 @@ This demonstrates:
 """
 
 import torch
+import random
+import numpy as np
 import sys
 import os
 from pathlib import Path
@@ -56,8 +58,13 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
 
         # Load the base processor first
         print("Loading processor...")
-        min_pixels = 256 * 28 * 28
-        max_pixels = 1280 * 28 * 28
+        min_pixels = 256 * 32 * 32
+        max_pixels = 256 * 32 * 32
+        # max_pixels = 1280 * 32 * 32
+        # min_pixels = 256 * 28 * 28
+        # max_pixels = 1280 * 28 * 28
+        # min_pixels = 256 * 28 * 28
+        # max_pixels = 1280 * 28 * 28
         base_processor = AutoProcessor.from_pretrained(
             model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
         )
@@ -265,6 +272,12 @@ def preprocess_images(
     if deepstack_image_embeds:
         deepstack_image_embeds = [layer.to(point3r_device) for layer in deepstack_image_embeds]
 
+    assert (grid_thw == grid_thw[0]).all(), "Not all grid_thw entries are identical"
+    t, h, w = grid_thw[0].tolist()
+    assert h <= w, "width cannot be smaller for Point3R"
+    expected_width = (w // processor.image_processor.merge_size) * processor.image_processor.patch_size
+    expected_height = (h // processor.image_processor.merge_size) * processor.image_processor.patch_size
+
     # Extract pointer memory from the same image, passing image_embeds and grid_thw
     pointer_data = extract_pointer_memory(
         image_inputs=image_inputs,
@@ -273,8 +286,8 @@ def preprocess_images(
         grid_thw=grid_thw,
         deepstack_image_embeds=deepstack_image_embeds if deepstack_image_embeds else None,
         device=point3r_device,
-        no_crop=False,
-        size=512,
+        no_crop=True,
+        size=(expected_width,expected_height),
         verbose=True,
         use_viser=use_viser,
         annotation_result=annotation_result,
@@ -897,7 +910,16 @@ def run_scan2cap(
 
     print("="*70)
 
+def set_seed(seed=42):
+    """Set random seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
 if __name__=='__main__':
+    set_seed(42)
+
     # Example 1: Run scan2cap with base model
     # run_scan2cap()
 
@@ -913,16 +935,22 @@ if __name__=='__main__':
     # Example 3: Preprocess images and run inference (original demo)
     # input_images_dir = "./data/demo_data/sample_data"
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
-    scene_id = "scene0000_01"
-    sample_ct = 128
-    pointer_format = "video"
-    use_merge = False
-    postfix = "_compact" if use_merge else ""
+    # scene_id = "scene0000_01"
+    # sample_ct = 32
+    # pointer_format = "video"
+    # use_merge = True
+    # postfix = "_compact" if use_merge else ""
+    # input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
+    # pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}.pt"
 
-    input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
-    pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}.pt"
+    scene_id = "ac48a9b736"
+    sample_ct = 32
+    pointer_format = "video"
+    use_merge = True
     # input_images_dir = "./data/demo_data/arkit_47895700"
     # pointer_data_path = "./data/demo_data/arkit_47895700.pt"
+    input_images_dir = f"./data/demo_data/scannetpp_{scene_id}"
+    pointer_data_path = f"./data/demo_data/scannetpp_{scene_id}.pt"
     
     # query = "Describe this image."
     query = "Describe this scene, with explanation of the spatial layout of the room."
@@ -931,7 +959,8 @@ if __name__=='__main__':
     model, processor, min_pixels, max_pixels, point3r_model = load_models(
         model_path=model_path, pointer_format=pointer_format, use_merge=use_merge
     )
-    preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                      input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None, 
-                      image_extensions = ("*.jpg", ))
+    with torch.inference_mode():
+        preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
+                        input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None, 
+                        image_extensions = ("*.jpg", "*.jpeg", "*.png", "*.JPG"))
     run_models(model, processor, pointer_data_path, query)

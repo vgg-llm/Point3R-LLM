@@ -171,7 +171,9 @@ def extract_pointer_memory(
 
     # Prepare images for Point3R using the simplified function
     # Determine target size based on the size parameter
-    if size == 512:
+    if isinstance(size, tuple):
+        target_size = size
+    elif size == 512:
         target_size = (640, 480)  # Default for size=512
     elif size == 224:
         target_size = (224, 224)

@@ -671,6 +671,9 @@ class Point3R(CroCoNet):
         # Compute post-merge grid dimensions per image
         h_merged = grid_thw[:, 1] // spatial_merge_size
         w_merged = grid_thw[:, 2] // spatial_merge_size
+        
+        assert target_h == h_merged
+        assert target_w == w_merged
 
         # Fast path: all images share the same grid dimensions (common case)
         if (h_merged == h_merged[0]).all() and (w_merged == w_merged[0]).all():
