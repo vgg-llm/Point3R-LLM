@@ -9,12 +9,14 @@ Usage:
 """
 
 import argparse
+import csv
+import cv2
 from pathlib import Path
 from demo_point3r import load_models, preprocess_images
 from tqdm import tqdm
 import os
 
-def load_scene_list(metadata_path='./scripts/demo/metadata/arkit.txt'):
+def load_scene_list(metadata_path='./scripts/demo/metadata/arkit_combined.txt'):
     """
     Load scene IDs from metadata file.
     
@@ -28,7 +30,69 @@ def load_scene_list(metadata_path='./scripts/demo/metadata/arkit.txt'):
         scene_ids = [line.strip() for line in f if line.strip()]
     return scene_ids
 
-def setup_arkit_paths(save_path='./output/arkit', metadata_path='./scripts/demo/metadata/arkit.txt'):
+SKY_DIRECTION_TO_ROT_INDEX = {
+    'Up': 0,
+    'Left': 1,
+    'Down': 2,
+    'Right': 3,
+}
+
+def load_sky_directions(metadata_csv_path='./docs/arkit_metadata.csv'):
+    """
+    Load sky_direction mapping from arkit_metadata.csv.
+
+    Returns:
+        dict: video_id (str) -> sky_direction (str)
+    """
+    sky_directions = {}
+    with open(metadata_csv_path, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            sky_directions[row['video_id']] = row['sky_direction']
+    return sky_directions
+
+def rotate_image(im, rot_index):
+    if rot_index == 0:
+        return im
+    elif rot_index == 1:
+        return cv2.rotate(im, cv2.ROTATE_90_CLOCKWISE)
+    elif rot_index == 2:
+        return cv2.rotate(im, cv2.ROTATE_180)
+    elif rot_index == 3:
+        return cv2.rotate(im, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return im
+
+def rotate_scene_images(metadata_path='./scripts/demo/metadata/arkit_combined.txt',
+                        metadata_csv_path='./docs/arkit_metadata.csv'):
+    """
+    For each scene in the metadata list, rotate images from lowres_wide/
+    into lowres_wide_rotated/ based on the sky_direction in arkit_metadata.csv.
+    Skips scenes that already have a lowres_wide_rotated/ directory.
+    """
+    base_dir = Path('./data/media/arkitscenes/3dod/Training')
+    scene_ids = load_scene_list(metadata_path)
+    sky_directions = load_sky_directions(metadata_csv_path)
+
+    for scene_id in tqdm(scene_ids, desc="Rotating images"):
+        src_dir = base_dir / scene_id / f'{scene_id}_frames' / 'lowres_wide'
+        dst_dir = base_dir / scene_id / f'{scene_id}_frames' / 'lowres_wide_rotated'
+
+        if dst_dir.exists():
+            continue
+        if not src_dir.exists():
+            print(f"Warning: lowres_wide not found for scene {scene_id}, skipping rotation")
+            continue
+
+        sky_dir = sky_directions.get(scene_id, 'Up')
+        rot_index = SKY_DIRECTION_TO_ROT_INDEX.get(sky_dir, 0)
+
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        for img_path in sorted(src_dir.glob('*.png')):
+            im = cv2.imread(str(img_path))
+            rotated = rotate_image(im, rot_index)
+            cv2.imwrite(str(dst_dir / img_path.name), rotated)
+
+def setup_arkit_paths(save_path='./output/arkit', metadata_path='./scripts/demo/metadata/arkit_combined.txt'):
     """
     Setup paths for ARKitScenes dataset.
     
@@ -52,7 +116,7 @@ def setup_arkit_paths(save_path='./output/arkit', metadata_path='./scripts/demo/
     input_image_paths = []
     valid_scene_ids = []
     for scene_id in scene_ids:
-        image_dir = base_dir / scene_id / f'{scene_id}_frames' / 'lowres_wide'
+        image_dir = base_dir / scene_id / f'{scene_id}_frames' / 'lowres_wide_rotated'
         if image_dir.exists():
             input_image_paths.append(str(image_dir))
             valid_scene_ids.append(scene_id)
@@ -77,8 +141,8 @@ def main():
                         help='EMA decay factor for embedding merge: updated = lambda * new + (1-lambda) * old (default: 1.0)')
     parser.add_argument('--save-path', type=str, default='./output/arkit',
                         help='Output directory path where preprocessed data will be saved (default: ./output/arkit)')
-    parser.add_argument('--metadata-path', type=str, default='./scripts/demo/metadata/arkit.txt',
-                        help='Path to the metadata file containing scene IDs (default: ./scripts/demo/metadata/arkit.txt)')
+    parser.add_argument('--metadata-path', type=str, default='./scripts/demo/metadata/arkit_combined.txt',
+                        help='Path to the metadata file containing scene IDs (default: ./scripts/demo/metadata/arkit_combined.txt)')
     parser.add_argument('--sample-ct', type=int, default=32,
                         help='Number of images to uniformly sample per scene (default: 32)')
     parser.add_argument('--model-path', type=str, default="Qwen/Qwen3-VL-4B-Instruct",
@@ -91,11 +155,16 @@ def main():
                         help='Run smoke test on only the first scene')
     parser.add_argument('--no-merge', action='store_true', default=False,
                         help='Disable spatial merging of memory tokens (use simple concatenation)')
+    parser.add_argument('--metadata-csv', type=str, default='./docs/arkit_metadata.csv',
+                        help='Path to arkit_metadata.csv with sky_direction info (default: ./docs/arkit_metadata.csv)')
     args = parser.parse_args()
 
     lambda_decay = args.lambda_decay
     sample_ct = args.sample_ct
     save_path = args.save_path
+
+    # Rotate images based on sky_direction (skips already-rotated scenes)
+    rotate_scene_images(args.metadata_path, args.metadata_csv)
 
     # Get all paths
     input_image_paths, pointer_data_paths = setup_arkit_paths(save_path, args.metadata_path)
