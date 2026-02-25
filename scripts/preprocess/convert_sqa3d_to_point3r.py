@@ -6,10 +6,23 @@ training and evaluation JSON files.
 """
 
 import json
-import argparse
 from pathlib import Path
 from tqdm import tqdm
 
+def get_sqa_question_type(question):
+    question = question.lstrip()
+    if question[:4].lower() == 'what':
+        return 'what'
+    elif question[:2].lower() == 'is':
+        return 'is'
+    elif question[:3].lower() == 'how':
+        return 'how'
+    elif question[:3].lower() == 'can':
+        return 'can'
+    elif question[:5].lower() == 'which':
+        return 'which'
+    else:
+        return 'others'   # others
 
 def load_questions_and_annotations(questions_path, annotations_path):
     """Load and merge SQA3D questions and annotations by question_id."""
@@ -43,7 +56,7 @@ def load_questions_and_annotations(questions_path, annotations_path):
     return merged
 
 
-def convert_sample(sample, num_pointer_tokens=1):
+def convert_sample(sample):
     """Convert a single SQA3D sample to Point3R format."""
     scene_id = sample.get("scene_id")
     if not scene_id:
@@ -53,15 +66,14 @@ def convert_sample(sample, num_pointer_tokens=1):
     if not answers:
         return None
 
-    pointer_sequence = (
-        "<|vision_start|>" +
-        "<|pointer_pad|>" * num_pointer_tokens +
-        "<|vision_end|>"
-    )
+    # pre-prompt for 3D grounding dataset
+    pre_prompt = "The video captures 3D spatial information of a scene. Please focus on the spatial relationships in the video and answer the following questions.\n"
+    post_prompt = "Answer the question using a single word or phrase."
+    pointer_token = "<|pointer_pad|>"
 
     situation = sample["situation"]
     question = sample["question"]
-    prompt = f"{pointer_sequence}\nSituation: {situation}\nQuestion: {question}\nAnswer in a single word or phrase."
+    prompt = f"{pre_prompt}\n{pointer_token} {situation} {question} {post_prompt}"
 
     converted = {
         "conversations": [
@@ -79,7 +91,7 @@ def convert_sample(sample, num_pointer_tokens=1):
     return converted
 
 
-def convert_split(questions_path, annotations_path, output_path, num_pointer_tokens=1):
+def convert_split(questions_path, annotations_path, output_path):
     """Convert one split of SQA3D to Point3R format."""
     print(f"Loading questions: {questions_path}")
     print(f"Loading annotations: {annotations_path}")
@@ -90,7 +102,7 @@ def convert_split(questions_path, annotations_path, output_path, num_pointer_tok
     skipped = 0
 
     for sample in tqdm(merged, desc="Converting"):
-        result = convert_sample(sample, num_pointer_tokens)
+        result = convert_sample(sample)
         if result is not None:
             converted.append(result)
         else:
@@ -108,17 +120,6 @@ def convert_split(questions_path, annotations_path, output_path, num_pointer_tok
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Convert SQA3D to Point3R format"
-    )
-    parser.add_argument(
-        "--num_pointer_tokens",
-        type=int,
-        default=1,
-        help="Number of pointer tokens per sample",
-    )
-    args = parser.parse_args()
-
     base = Path("data")
     sqa3d_dir = base / "media" / "SQA3D" / "balanced"
 
@@ -127,7 +128,6 @@ def main():
         sqa3d_dir / "v1_balanced_questions_train_scannetv2.json",
         sqa3d_dir / "v1_balanced_sqa_annotations_train_scannetv2.json",
         base / "train" / "sqa3d_train_point3r.json",
-        args.num_pointer_tokens,
     )
 
     # Evaluation set (val)
@@ -135,7 +135,6 @@ def main():
         sqa3d_dir / "v1_balanced_questions_val_scannetv2.json",
         sqa3d_dir / "v1_balanced_sqa_annotations_val_scannetv2.json",
         base / "evaluation" / "sqa3d_point3r" / "val.json",
-        args.num_pointer_tokens,
     )
 
     # Evaluation set (test)
@@ -143,7 +142,6 @@ def main():
         sqa3d_dir / "v1_balanced_questions_test_scannetv2.json",
         sqa3d_dir / "v1_balanced_sqa_annotations_test_scannetv2.json",
         base / "evaluation" / "sqa3d_point3r" / "test.json",
-        args.num_pointer_tokens,
     )
 
 

@@ -5,12 +5,11 @@ Produces both training and evaluation JSON files.
 """
 
 import json
-import argparse
 from pathlib import Path
 from tqdm import tqdm
 
 
-def convert_sample(sample, num_pointer_tokens=1):
+def convert_sample(sample):
     """Convert a single Beacon3D sample to Point3R format."""
     scene_id = sample.get("scene_id")
     if not scene_id:
@@ -20,17 +19,16 @@ def convert_sample(sample, num_pointer_tokens=1):
     if not answers:
         return None
 
-    pointer_sequence = (
-        "<|vision_start|>" +
-        "<|pointer_pad|>" * num_pointer_tokens +
-        "<|vision_end|>"
-    )
+    # pre-prompt for 3D grounding dataset
+    pre_prompt = "The video captures 3D spatial information of a scene. Please focus on the spatial relationships in the video and answer the following questions.\n"
+    post_prompt = "Answer the question using a single word or phrase."
+    pointer_token = "<|pointer_pad|>"
 
     question = sample["question"]
 
     converted = {
         "conversations": [
-            {"from": "human", "value": f"{pointer_sequence}\n{question}\nAnswer in a single word or phrase."},
+            {"from": "human", "value": f"{pre_prompt}{pointer_token} {question} {post_prompt}"},
             {"from": "gpt", "value": answers[0]},
         ],
         "pointer_data": f"scannet/pointer_memory/{scene_id}.pt",
@@ -44,7 +42,7 @@ def convert_sample(sample, num_pointer_tokens=1):
     return converted
 
 
-def convert_file(input_path, output_path, num_pointer_tokens=1):
+def convert_file(input_path, output_path):
     """Convert a Beacon3D JSON file to Point3R format."""
     print(f"Loading: {input_path}")
     with open(input_path, "r") as f:
@@ -55,7 +53,7 @@ def convert_file(input_path, output_path, num_pointer_tokens=1):
     skipped = 0
 
     for sample in tqdm(data, desc="Converting"):
-        result = convert_sample(sample, num_pointer_tokens)
+        result = convert_sample(sample)
         if result is not None:
             converted.append(result)
         else:
@@ -73,31 +71,18 @@ def convert_file(input_path, output_path, num_pointer_tokens=1):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Convert Beacon3D to Point3R format"
-    )
-    parser.add_argument(
-        "--num_pointer_tokens",
-        type=int,
-        default=1,
-        help="Number of pointer tokens per sample",
-    )
-    args = parser.parse_args()
-
     base = Path("data")
 
     # Training set
     convert_file(
         base / "media" / "Beacon3D" / "train.json",
         base / "train" / "beacon3d_train_point3r.json",
-        args.num_pointer_tokens,
     )
 
     # Evaluation set (val, since test has no answers)
     convert_file(
         base / "media" / "Beacon3D" / "val.json",
         base / "evaluation" / "beacon3d_point3r" / "val.json",
-        args.num_pointer_tokens,
     )
 
 
