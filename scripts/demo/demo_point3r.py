@@ -58,13 +58,13 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
 
         # Load the base processor first
         print("Loading processor...")
-        min_pixels = 256 * 32 * 32
-        max_pixels = 256 * 32 * 32
+        # min_pixels = 256 * 32 * 32
+        # max_pixels = 256 * 32 * 32
         # max_pixels = 1280 * 32 * 32
         # min_pixels = 256 * 28 * 28
         # max_pixels = 1280 * 28 * 28
-        # min_pixels = 256 * 28 * 28
-        # max_pixels = 1280 * 28 * 28
+        min_pixels = 256 * 28 * 28
+        max_pixels = 1280 * 28 * 28
         base_processor = AutoProcessor.from_pretrained(
             model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
         )
