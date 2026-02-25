@@ -15,6 +15,14 @@ from pathlib import Path
 from demo_point3r import load_models, preprocess_images
 from tqdm import tqdm
 import os
+import gc
+import torch
+
+def cleanup_cuda():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
 
 def load_scene_list(metadata_path='./scripts/demo/metadata/arkit_combined.txt'):
     """
@@ -37,19 +45,22 @@ SKY_DIRECTION_TO_ROT_INDEX = {
     'Right': 3,
 }
 
-def load_sky_directions(metadata_csv_path='./docs/arkit_metadata.csv'):
+def load_sky_directions(metadata_csv_path='./data/media/arkitscenes/3dod/metadata.csv'):
     """
-    Load sky_direction mapping from arkit_metadata.csv.
+    Load sky_direction and fold mapping from arkit_metadata.csv.
 
     Returns:
-        dict: video_id (str) -> sky_direction (str)
+        sky_directions: dict of video_id (str) -> sky_direction (str)
+        folds: dict of video_id (str) -> fold (str, 'Training' or 'Validation')
     """
     sky_directions = {}
+    folds = {}
     with open(metadata_csv_path, 'r') as f:
         reader = csv.DictReader(f)
         for row in reader:
             sky_directions[row['video_id']] = row['sky_direction']
-    return sky_directions
+            folds[row['video_id']] = row['fold']
+    return sky_directions, folds
 
 def rotate_image(im, rot_index):
     if rot_index == 0:
@@ -63,17 +74,23 @@ def rotate_image(im, rot_index):
     return im
 
 def rotate_scene_images(metadata_path='./scripts/demo/metadata/arkit_combined.txt',
-                        metadata_csv_path='./docs/arkit_metadata.csv'):
+                        metadata_csv_path='./data/media/arkitscenes/3dod/metadata.csv',
+                        sample_ct=32):
     """
     For each scene in the metadata list, rotate images from lowres_wide/
     into lowres_wide_rotated/ based on the sky_direction in arkit_metadata.csv.
     Skips scenes that already have a lowres_wide_rotated/ directory.
     """
-    base_dir = Path('./data/media/arkitscenes/3dod/Training')
+    base_dirs = {
+        'Training':   Path('./data/media/arkitscenes/3dod/Training'),
+        'Validation': Path('./data/media/arkitscenes/3dod/Validation'),
+    }
     scene_ids = load_scene_list(metadata_path)
-    sky_directions = load_sky_directions(metadata_csv_path)
+    sky_directions, folds = load_sky_directions(metadata_csv_path)
 
     for scene_id in tqdm(scene_ids, desc="Rotating images"):
+        fold = folds.get(scene_id, 'Training')
+        base_dir = base_dirs[fold]
         src_dir = base_dir / scene_id / f'{scene_id}_frames' / 'lowres_wide'
         dst_dir = base_dir / scene_id / f'{scene_id}_frames' / 'lowres_wide_rotated'
 
@@ -87,7 +104,12 @@ def rotate_scene_images(metadata_path='./scripts/demo/metadata/arkit_combined.tx
         rot_index = SKY_DIRECTION_TO_ROT_INDEX.get(sky_dir, 0)
 
         dst_dir.mkdir(parents=True, exist_ok=True)
-        for img_path in sorted(src_dir.glob('*.png')):
+        image_paths = sorted(src_dir.glob('*.png'))
+        if len(image_paths) > sample_ct:
+            step = len(image_paths) / sample_ct
+            frames_indices = [int(i * step) for i in range(sample_ct)]
+            image_paths = [image_paths[idx] for idx in frames_indices]
+        for img_path in image_paths:
             im = cv2.imread(str(img_path))
             rotated = rotate_image(im, rot_index)
             cv2.imwrite(str(dst_dir / img_path.name), rotated)
@@ -95,44 +117,53 @@ def rotate_scene_images(metadata_path='./scripts/demo/metadata/arkit_combined.tx
 def setup_arkit_paths(save_path='./output/arkit', metadata_path='./scripts/demo/metadata/arkit_combined.txt'):
     """
     Setup paths for ARKitScenes dataset.
-    
+
     Args:
         save_path: Directory where preprocessed pointer data will be saved
         metadata_path: Path to the metadata file containing scene IDs
-        
+
     Returns:
         input_image_paths: List of paths to image directories for each scene
         pointer_data_paths: List of paths where pointer data will be saved
     """
-    base_dir = Path('./data/media/arkitscenes/3dod/Training')
-    
-    if not base_dir.exists():
-        raise ValueError(f"Dataset directory not found: {base_dir}")
-    
+    train_base_dir = Path('./data/media/arkitscenes/3dod/Training')
+    val_base_dir   = Path('./data/media/arkitscenes/3dod/Validation')
+
+    # At least one split should exist
+    if not train_base_dir.exists() and not val_base_dir.exists():
+        raise ValueError(
+            f"Dataset directory not found. Checked:\n  - {train_base_dir}\n  - {val_base_dir}"
+        )
+
     # Load scene list from metadata
     scene_ids = load_scene_list(metadata_path)
-    
-    # Build paths to image directories
+
+    # Build paths to image directories (try Training first, then Validation)
     input_image_paths = []
     valid_scene_ids = []
+
     for scene_id in scene_ids:
-        image_dir = base_dir / scene_id / f'{scene_id}_frames' / 'lowres_wide_rotated'
-        if image_dir.exists():
-            input_image_paths.append(str(image_dir))
+        rel = Path(scene_id) / f'{scene_id}_frames' / 'lowres_wide_rotated'
+
+        train_dir = train_base_dir / rel
+        val_dir   = val_base_dir / rel
+
+        if train_base_dir.exists() and train_dir.exists():
+            input_image_paths.append(str(train_dir))
+            valid_scene_ids.append(scene_id)
+        elif val_base_dir.exists() and val_dir.exists():
+            input_image_paths.append(str(val_dir))
             valid_scene_ids.append(scene_id)
         else:
-            print(f"Warning: Image directory not found for scene {scene_id}")
-    
+            print(f"Warning: Image directory not found for scene {scene_id} in Training/Validation")
+
     # Create save directory
     save_dir = Path(save_path)
     save_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Build pointer data save paths
-    pointer_data_paths = [
-        str(save_dir / f"{scene_id}.pt")
-        for scene_id in valid_scene_ids
-    ]
-    
+    pointer_data_paths = [str(save_dir / f"{scene_id}.pt") for scene_id in valid_scene_ids]
+
     return input_image_paths, pointer_data_paths
 
 def main():
@@ -155,8 +186,8 @@ def main():
                         help='Run smoke test on only the first scene')
     parser.add_argument('--no-merge', action='store_true', default=False,
                         help='Disable spatial merging of memory tokens (use simple concatenation)')
-    parser.add_argument('--metadata-csv', type=str, default='./docs/arkit_metadata.csv',
-                        help='Path to arkit_metadata.csv with sky_direction info (default: ./docs/arkit_metadata.csv)')
+    parser.add_argument('--metadata-csv', type=str, default='./data/media/arkitscenes/3dod/metadata.csv',
+                        help='Path to arkit_metadata.csv with sky_direction info (default: ./data/media/arkitscenes/3dod/metadata.csv)')
     args = parser.parse_args()
 
     lambda_decay = args.lambda_decay
@@ -164,7 +195,7 @@ def main():
     save_path = args.save_path
 
     # Rotate images based on sky_direction (skips already-rotated scenes)
-    rotate_scene_images(args.metadata_path, args.metadata_csv)
+    rotate_scene_images(args.metadata_path, args.metadata_csv, sample_ct=sample_ct)
 
     # Get all paths
     input_image_paths, pointer_data_paths = setup_arkit_paths(save_path, args.metadata_path)
@@ -200,15 +231,17 @@ def main():
             continue
         for max_mem in [None, 15000, 10000]:
             try:
-                preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                                  input_images_dir, pointer_data_path, use_viser=False, unload_point3r_model=False,
-                                  lambda_decay=lambda_decay, sample_ct=sample_ct, max_memory_tokens=max_mem)
+                with torch.inference_mode():
+                    preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
+                                    input_images_dir, pointer_data_path, use_viser=False, unload_point3r_model=False,
+                                    lambda_decay=lambda_decay, sample_ct=sample_ct, max_memory_tokens=max_mem)
                 break
             except Exception as e:
                 if max_mem == 10000:
                     print(f"\nFailed to process {input_images_dir}: {e}")
                 else:
                     print(f"\nmax_memory_tokens={max_mem} failed for {input_images_dir}, retrying with lower limit: {e}")
+                cleanup_cuda()
 
     if args.smoke_test:
         print(f"\n{'='*50}")
