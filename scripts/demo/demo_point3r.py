@@ -9,6 +9,7 @@ This demonstrates:
 
 import torch
 import random
+import re
 import numpy as np
 import sys
 import os
@@ -135,6 +136,67 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
     else:
         return model, processor, min_pixels, max_pixels, None
 
+def sort_scannetpp_frames(image_paths):
+    """Sort DSC*.JPG files in video order and exclude sampled views at the end.
+
+    Handles:
+    - Counter wraparound (DSC09999 -> DSC00001)
+    - Optional filename prefix (e.g., 51628e0b_DSC09998.JPG)
+    - Excludes non-video sampled views after the last gap in the sequence
+    """
+    DSC_PATTERN = re.compile(r'DSC(\d+)\.JPG')
+    MOD = 10000  # DSC counter range: 00001-09999, wraps at 10000
+
+    # Extract numeric part from each path
+    num_to_path = {}
+    nums = []
+    for p in image_paths:
+        m = DSC_PATTERN.search(p.name)
+        if m:
+            n = int(m.group(1))
+            num_to_path[n] = p
+            nums.append(n)
+
+    if len(nums) < 2:
+        return image_paths
+
+    nums.sort()
+
+    # Find the largest circular gap to determine sequence start
+    max_gap = -1
+    max_gap_idx = -1
+    for i in range(len(nums)):
+        next_i = (i + 1) % len(nums)
+        gap = (nums[next_i] - nums[i]) % MOD
+        if gap > max_gap:
+            max_gap = gap
+            max_gap_idx = i
+
+    # Reorder: sequence starts right after the largest gap
+    start_idx = (max_gap_idx + 1) % len(nums)
+    sorted_nums = nums[start_idx:] + nums[:start_idx]
+
+    # Find gaps in the reordered sequence
+    # The 9999->0001 rollover (b < a) is a counter wrap, not a real gap
+    gap_indices = []
+    for i in range(len(sorted_nums) - 1):
+        a, b = sorted_nums[i], sorted_nums[i + 1]
+        if b < a:
+            # Counter rollover (e.g., 9999 -> 1), not a real gap
+            continue
+        if b - a > 1:
+            gap_indices.append(i)
+
+    # The last gap separates video frames from sampled views
+    if gap_indices:
+        last_gap = gap_indices[-1]
+        video_nums = sorted_nums[:last_gap + 1]
+    else:
+        video_nums = sorted_nums
+
+    return [num_to_path[n] for n in video_nums]
+
+
 def preprocess_images(
         model,
         processor,
@@ -165,6 +227,10 @@ def preprocess_images(
     # Compute sorted list of image paths
     p = Path(input_images_dir)
     image_paths = natsorted([f for ext in image_extensions for f in p.glob(ext)])
+    # For ScanNet++ JPG files, apply specialized sorting and exclude sampled views
+    jpg_paths = [f for f in image_paths if re.search(r'DSC\d+\.JPG', f.name)]
+    if jpg_paths:
+        image_paths = sort_scannetpp_frames(jpg_paths)
     # Uniformly sample 32 paths
     
     if len(image_paths) > sample_ct:
