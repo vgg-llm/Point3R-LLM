@@ -21,17 +21,18 @@ def extract_scene_id(image_path):
     return None
 
 
-def convert_annotation(annotation, num_pointer_tokens=1):
+def convert_annotation(annotation):
     """
     Convert a single annotation from image-based to pointer-based format.
 
     Args:
         annotation: Original annotation dict with 'images' and <image> tokens
-        num_pointer_tokens: Number of pointer tokens to use (default: 1)
 
     Returns:
         Converted annotation dict with 'pointer_data' and pointer tokens
     """
+    pre_prompt = "The video captures 3D spatial information of a scene. Please focus on the spatial relationships in the video and answer the following questions.\n"
+    pointer_token = "<|pointer_pad|>"
     new_annotation = annotation.copy()
 
     # Extract scene_id from first image path
@@ -53,26 +54,18 @@ def convert_annotation(annotation, num_pointer_tokens=1):
     if 'images' in new_annotation:
         del new_annotation['images']
 
-    # Update conversations to replace <image> tokens with pointer tokens
+    # Update conversations to replace <image> tokens with pointer token
     if 'conversations' in new_annotation:
         new_conversations = []
         for conv in new_annotation['conversations']:
             new_conv = conv.copy()
             value = conv.get('value', '')
 
-            # Count and replace <image> tokens
+            # Replace <image> tokens with a single pointer token
             num_images = value.count('<image>')
             if num_images > 0:
-                # Replace all <image> tokens with pointer token sequence
-                # <|vision_start|><|pointer_pad|>...<|pointer_pad|><|vision_end|>
-                pointer_sequence = (
-                    "<|vision_start|>" +
-                    "<|pointer_pad|>" * num_pointer_tokens +
-                    "<|vision_end|>"
-                )
-                # Remove all <image> tokens and add pointer sequence at the beginning
                 value_without_images = value.replace('<image>', '')
-                new_value = pointer_sequence + value_without_images
+                new_value = pre_prompt + pointer_token + " " + value_without_images
                 new_conv['value'] = new_value
 
             new_conversations.append(new_conv)
@@ -80,6 +73,23 @@ def convert_annotation(annotation, num_pointer_tokens=1):
         new_annotation['conversations'] = new_conversations
 
     return new_annotation
+
+
+def write_dataset_card(output_dir, splits):
+    """Write a HuggingFace dataset card (README.md) with explicit split definitions."""
+    data_files = "\n".join(
+        f"  - split: {split}\n    path: {filename}" for split, filename in splits
+    )
+    readme = f"""---
+license: apache-2.0
+configs:
+- config_name: default
+  data_files:
+{data_files}
+---
+"""
+    with open(Path(output_dir) / "README.md", "w") as f:
+        f.write(readme)
 
 
 def main():
@@ -97,12 +107,6 @@ def main():
         type=str,
         default='data/train/scan2cap_train_32frames_point3r.json',
         help='Output annotation file path'
-    )
-    parser.add_argument(
-        '--num_pointer_tokens',
-        type=int,
-        default=1,
-        help='Number of pointer tokens to use per sample'
     )
     args = parser.parse_args()
 
@@ -123,8 +127,8 @@ def main():
     skipped = 0
 
     print("Converting annotations...")
-    for i, annotation in enumerate(tqdm(annotations)):
-        converted = convert_annotation(annotation, args.num_pointer_tokens)
+    for annotation in tqdm(annotations):
+        converted = convert_annotation(annotation)
         if converted is not None:
             converted_annotations.append(converted)
         else:

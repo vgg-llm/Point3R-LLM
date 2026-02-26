@@ -70,6 +70,23 @@ def convert_file(input_path, output_path):
     return converted
 
 
+def write_dataset_card(output_dir, splits):
+    """Write a HuggingFace dataset card (README.md) with explicit split definitions."""
+    data_files = "\n".join(
+        f"  - split: {split}\n    path: {filename}" for split, filename in splits
+    )
+    readme = f"""---
+license: apache-2.0
+configs:
+- config_name: default
+  data_files:
+{data_files}
+---
+"""
+    with open(Path(output_dir) / "README.md", "w") as f:
+        f.write(readme)
+
+
 def main():
     base = Path("data")
 
@@ -80,10 +97,12 @@ def main():
     )
 
     # Evaluation set (val, since test has no answers)
+    eval_dir = base / "evaluation" / "beacon3d_point3r"
     convert_file(
         base / "media" / "Beacon3D" / "val.json",
-        base / "evaluation" / "beacon3d_point3r" / "val.json",
+        eval_dir / "val.json",
     )
+    write_dataset_card(eval_dir, [("val", "val.json")])
 
 
 if __name__ == "__main__":
