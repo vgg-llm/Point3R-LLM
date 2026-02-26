@@ -59,8 +59,8 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
 
         # Load the base processor first
         print("Loading processor...")
-        min_pixels = 192 * 32 * 32
-        max_pixels = 600 * 32 * 32
+        min_pixels = 768 * 32 * 32
+        max_pixels = 768 * 32 * 32
         # max_pixels = 1280 * 32 * 32
         # min_pixels = 256 * 28 * 28
         # max_pixels = 1280 * 28 * 28
@@ -264,7 +264,7 @@ def preprocess_images(
     ]
 
     print("Extracting image info from images...")
-    image_inputs, video_inputs = process_vision_info(vision_message)
+    image_inputs, video_inputs = process_vision_info(vision_message, image_patch_size=32)
 
     # Process images in batches
     batch_size = 2  # Adjust based on available GPU memory
@@ -340,6 +340,8 @@ def preprocess_images(
 
     assert (grid_thw == grid_thw[0]).all(), "Not all grid_thw entries are identical"
     t, h, w = grid_thw[0].tolist()
+    print(f"t, h, w = {t}, {h}, {w}")
+    print("patch size:", processor.image_processor.patch_size)
     # assert h <= w, "width cannot be smaller for Point3R"
     expected_width = (w // processor.image_processor.merge_size) * processor.image_processor.patch_size
     expected_height = (h // processor.image_processor.merge_size) * processor.image_processor.patch_size
@@ -1001,22 +1003,22 @@ if __name__=='__main__':
     # Example 3: Preprocess images and run inference (original demo)
     # input_images_dir = "./data/demo_data/sample_data"
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
-    # scene_id = "scene0000_01"
-    # sample_ct = 32
-    # pointer_format = "video"
-    # use_merge = True
-    # postfix = "_compact" if use_merge else ""
-    # input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
-    # pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}.pt"
-
-    scene_id = "ac48a9b736"
+    scene_id = "scene0000_01"
     sample_ct = 32
     pointer_format = "video"
     use_merge = True
-    # input_images_dir = "./data/demo_data/arkit_47895700"
-    # pointer_data_path = "./data/demo_data/arkit_47895700.pt"
-    input_images_dir = f"./data/demo_data/scannetpp_{scene_id}"
-    pointer_data_path = f"./data/demo_data/scannetpp_{scene_id}.pt"
+    postfix = "_compact" if use_merge else ""
+    input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
+    pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}.pt"
+
+    # scene_id = "ac48a9b736"
+    # sample_ct = 32
+    # pointer_format = "video"
+    # use_merge = True
+    # # input_images_dir = "./data/demo_data/arkit_47895700"
+    # # pointer_data_path = "./data/demo_data/arkit_47895700.pt"
+    # input_images_dir = f"./data/demo_data/scannetpp_{scene_id}"
+    # pointer_data_path = f"./data/demo_data/scannetpp_{scene_id}.pt"
     
     # query = "Describe this image."
     query = "Describe this scene, with explanation of the spatial layout of the room."
@@ -1028,5 +1030,5 @@ if __name__=='__main__':
     with torch.inference_mode():
         preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
                         input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None, 
-                        image_extensions = ("*.jpg", "*.jpeg", "*.png", "*.JPG"))
+                        image_extensions = ("*.jpg",))
     run_models(model, processor, pointer_data_path, query)
