@@ -1,8 +1,8 @@
 """
 SPAR-Subset Point3R Evaluation Script
 
-Evaluates appearance ordering tasks from SPAR-subset.
-Question types: fill (concise comma-separated), sentence (verbose natural language)
+Evaluates appearance ordering tasks from SPAR-subset in MCA format.
+Question type: obj_appearance_order (multiple choice A/B/C/D)
 Data sources: scannet, scannetpp
 """
 
@@ -32,6 +32,11 @@ def spar_subset_doc_to_text(doc, lmms_eval_specific_kwargs=None):
     return question
 
 
+def fuzzy_matching(pred):
+    """Extract first word/letter from prediction."""
+    return pred.split(' ')[0].rstrip('.').strip()
+
+
 def exact_match(pred, target):
     """Check if prediction matches target (case-insensitive)."""
     return 1.0 if pred.strip().lower() == target.strip().lower() else 0.0
@@ -40,7 +45,7 @@ def exact_match(pred, target):
 def spar_subset_process_results(doc, results):
     """Process results for a single document."""
     doc["prediction"] = results[0]
-    doc["accuracy"] = exact_match(doc["prediction"], doc["ground_truth"])
+    doc["accuracy"] = exact_match(fuzzy_matching(doc["prediction"]), doc["ground_truth"])
     return {"spar_subset_point3r_score": doc}
 
 
@@ -50,21 +55,14 @@ def spar_subset_aggregate_results(results):
 
     output = {}
 
-    # Group by question_type (fill/sentence)
-    for question_type, qt_indexes in results.groupby("question_type").groups.items():
-        per_qt = results.iloc[qt_indexes]
-        output[f"{question_type}_accuracy"] = per_qt["accuracy"].mean()
-
-        # Further group by data_source within each question_type
-        for data_source, ds_indexes in per_qt.groupby("data_source").groups.items():
-            per_ds = per_qt.iloc[ds_indexes]
-            output[f"{data_source}_{question_type}_accuracy"] = per_ds["accuracy"].mean()
+    # Group by data_source (scannet/scannetpp)
+    for data_source, ds_indexes in results.groupby("data_source").groups.items():
+        per_ds = results.iloc[ds_indexes]
+        output[f"{data_source}_accuracy"] = per_ds["accuracy"].mean()
 
     # Compute overall score
     if output:
-        # Average across question_type-level scores only (not the per-source breakdowns)
-        qt_scores = [v for k, v in output.items() if k.count("_") == 1]
-        output["overall"] = sum(qt_scores) / len(qt_scores) if qt_scores else 0.0
+        output["overall"] = sum(output.values()) / len(output)
     else:
         output["overall"] = 0.0
 

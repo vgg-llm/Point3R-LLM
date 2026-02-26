@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 Convert SPAR-subset training and evaluation data to Point3R format.
-Handles both ScanNet and ScanNet++ data in "fill" and "sentence" variants.
+Processes only "fill" variant from ScanNet and ScanNet++ data.
+Converts free-form appearance order questions to VSI-bench MCA format
+with A/B/C/D multiple-choice options.
 
-Source data: data/SPAR-subset/train/*.jsonl and data/SPAR-subset/val/*.jsonl
+Source data: data/SPAR-subset/train/*_fill.jsonl and data/SPAR-subset/val/*_fill.jsonl
 Training output: data/train/spar_subset_point3r.json
 Evaluation output: data/evaluation/spar_subset_point3r/test.json
 
@@ -15,6 +17,7 @@ Pointer memory paths:
 import json
 import argparse
 import os
+import random
 from pathlib import Path
 from tqdm import tqdm
 
@@ -23,6 +26,13 @@ POINTER_MEMORY_PATHS = {
     "scannet": "scannet/pointer_memory",
     "scannetpp": "scannetpp/pointer_memory",
 }
+
+OPTION_LETTERS = ["A", "B", "C", "D"]
+
+QUESTION_TEMPLATE = (
+    "What will be the first-time appearance order of the following "
+    "categories in the video: {objects}?"
+)
 
 
 def detect_data_source(filename):
@@ -34,13 +44,9 @@ def detect_data_source(filename):
     return None
 
 
-def detect_variant(filename):
-    """Detect variant (fill/sentence) from filename."""
-    if "_fill." in filename or "_fill_" in filename:
-        return "fill"
-    elif "_sentence." in filename or "_sentence_" in filename:
-        return "sentence"
-    return None
+def is_fill_variant(filename):
+    """Check if file is a fill variant (skip sentence variant)."""
+    return "_fill." in filename or "_fill_" in filename
 
 
 def extract_scene_name(sample):
@@ -55,8 +61,74 @@ def extract_scene_name(sample):
     return None
 
 
-def convert_train_sample(sample, data_source, variant, num_pointer_tokens=1):
-    """Convert a single SPAR-subset sample to Point3R training format."""
+def extract_objects_from_answer(answer):
+    """Extract object list from comma-separated answer string."""
+    return [obj.strip() for obj in answer.split(",") if obj.strip()]
+
+
+def generate_distractors(correct_order, rng, num_distractors=3):
+    """Generate unique distractor permutations different from the correct order."""
+    distractors = []
+    attempts = 0
+    max_attempts = 100
+    while len(distractors) < num_distractors and attempts < max_attempts:
+        shuffled = list(correct_order)
+        rng.shuffle(shuffled)
+        if shuffled != correct_order and shuffled not in distractors:
+            distractors.append(shuffled)
+        attempts += 1
+    return distractors
+
+
+def build_mcq(correct_order, sample_id):
+    """Build MCQ options and assign correct answer to a random position.
+
+    Returns:
+        (question_text, options_list, correct_letter, objects_str)
+    """
+    rng = random.Random(hash(sample_id))
+
+    objects = list(correct_order)
+    objects_str = ", ".join(objects)
+    question = QUESTION_TEMPLATE.format(objects=objects_str)
+
+    distractors = generate_distractors(correct_order, rng)
+
+    # Place correct answer at a random position
+    correct_idx = rng.randint(0, 3)
+    all_options = []
+    distractor_iter = iter(distractors)
+    for i in range(4):
+        if i == correct_idx:
+            all_options.append(correct_order)
+        else:
+            all_options.append(next(distractor_iter))
+
+    correct_letter = OPTION_LETTERS[correct_idx]
+
+    options_formatted = [
+        f"{OPTION_LETTERS[i]}. {', '.join(opt)}"
+        for i, opt in enumerate(all_options)
+    ]
+
+    return question, options_formatted, correct_letter, objects_str
+
+
+def build_conversation_value(question, options_formatted):
+    """Build the full human conversation value with pointer tokens."""
+    options_text = "Options:\n" + "\n".join(options_formatted)
+    full_text = (
+        "<|vision_start|><|pointer_pad|><|vision_end|>\n"
+        f"These are frames of a video.\n"
+        f"{question}\n"
+        f"{options_text}\n"
+        "Answer with the option's letter from the given choices directly."
+    )
+    return full_text
+
+
+def convert_train_sample(sample, data_source):
+    """Convert a single SPAR-subset sample to Point3R MCA training format."""
     scene_name = extract_scene_name(sample)
     if not scene_name:
         return None
@@ -64,43 +136,48 @@ def convert_train_sample(sample, data_source, variant, num_pointer_tokens=1):
     if data_source not in POINTER_MEMORY_PATHS:
         return None
 
+    # Extract answer
+    gpt_answer = ""
+    for conv in sample.get("conversations", []):
+        if conv.get("from") == "gpt":
+            gpt_answer = conv.get("value", "")
+            break
+
+    objects = extract_objects_from_answer(gpt_answer)
+    if len(objects) < 2:
+        return None
+
+    sample_id = sample.get("id", "")
+    question, options_formatted, correct_letter, _ = build_mcq(objects, sample_id)
+
     pointer_memory_prefix = POINTER_MEMORY_PATHS[data_source]
 
-    # Build pointer sequence
-    pointer_sequence = (
-        "<|vision_start|>" +
-        "<|pointer_pad|>" * num_pointer_tokens +
-        "<|vision_end|>"
-    )
-
-    # Process conversations
-    new_conversations = []
-    for conv in sample.get("conversations", []):
-        new_conv = conv.copy()
-        value = conv.get("value", "")
-
-        if conv.get("from") == "human":
-            value = value.replace("<image>", "").strip()
-            new_conv["value"] = f"{pointer_sequence}\n{value}"
-
-        new_conversations.append(new_conv)
+    conversations = [
+        {
+            "from": "human",
+            "value": build_conversation_value(question, options_formatted),
+        },
+        {
+            "from": "gpt",
+            "value": correct_letter,
+        },
+    ]
 
     converted = {
-        "conversations": new_conversations,
+        "conversations": conversations,
         "pointer_data": f"{pointer_memory_prefix}/{scene_name}.pt",
         "metadata": {
             "dataset": "spar_subset",
             "data_source": data_source,
-            "variant": variant,
             "scene_id": scene_name,
-            "original_id": sample.get("id", ""),
+            "original_id": sample_id,
         },
     }
     return converted
 
 
-def convert_eval_sample(sample, data_source, variant, num_pointer_tokens=1):
-    """Convert a single SPAR-subset sample to Point3R evaluation format."""
+def convert_eval_sample(sample, data_source):
+    """Convert a single SPAR-subset sample to Point3R MCA evaluation format."""
     scene_name = extract_scene_name(sample)
     if not scene_name:
         return None
@@ -108,43 +185,44 @@ def convert_eval_sample(sample, data_source, variant, num_pointer_tokens=1):
     if data_source not in POINTER_MEMORY_PATHS:
         return None
 
-    pointer_memory_prefix = POINTER_MEMORY_PATHS[data_source]
-
-    # Build pointer sequence
-    pointer_sequence = (
-        "<|vision_start|>" +
-        "<|pointer_pad|>" * num_pointer_tokens +
-        "<|vision_end|>"
-    )
-
-    # Process conversations
-    new_conversations = []
-    for conv in sample.get("conversations", []):
-        new_conv = conv.copy()
-        value = conv.get("value", "")
-
-        if conv.get("from") == "human":
-            value = value.replace("<image>", "").strip()
-            new_conv["value"] = f"{pointer_sequence}\n{value}"
-
-        new_conversations.append(new_conv)
-
-    # Ground truth is the GPT response
-    ground_truth = ""
+    # Extract answer
+    gpt_answer = ""
     for conv in sample.get("conversations", []):
         if conv.get("from") == "gpt":
-            ground_truth = conv.get("value", "")
+            gpt_answer = conv.get("value", "")
             break
 
+    objects = extract_objects_from_answer(gpt_answer)
+    if len(objects) < 2:
+        return None
+
+    sample_id = sample.get("id", "")
+    question, options_formatted, correct_letter, _ = build_mcq(objects, sample_id)
+
+    pointer_memory_prefix = POINTER_MEMORY_PATHS[data_source]
+
+    conversations = [
+        {
+            "from": "human",
+            "value": build_conversation_value(question, options_formatted),
+        },
+        {
+            "from": "gpt",
+            "value": correct_letter,
+        },
+    ]
+
     converted = {
-        "id": sample.get("id"),
-        "conversations": new_conversations,
+        "id": sample_id,
+        "conversations": conversations,
         "pointer_data": f"{pointer_memory_prefix}/{scene_name}.pt",
-        "ground_truth": ground_truth,
-        "question_type": variant,
-        "data_source": data_source,
+        "ground_truth": correct_letter,
+        "question_type": "obj_appearance_order",
+        "question": question,
+        "options": options_formatted,
         "metadata": {
             "dataset": "spar_subset",
+            "data_source": data_source,
             "scene_id": scene_name,
         },
     }
@@ -162,15 +240,12 @@ def load_jsonl(filepath):
     return data
 
 
-def process_split(source_dir, split_name, convert_fn, num_pointer_tokens,
-                  enabled_sources):
-    """Process all JSONL files in a split directory."""
+def process_split(source_dir, split_name, convert_fn, enabled_sources):
+    """Process fill-variant JSONL files in a split directory."""
     all_converted = []
     stats = {
-        "scannet_fill": 0,
-        "scannet_sentence": 0,
-        "scannetpp_fill": 0,
-        "scannetpp_sentence": 0,
+        "scannet": 0,
+        "scannetpp": 0,
         "skipped": 0,
     }
 
@@ -180,10 +255,14 @@ def process_split(source_dir, split_name, convert_fn, num_pointer_tokens,
 
     for jsonl_file in jsonl_files:
         data_source = detect_data_source(jsonl_file)
-        variant = detect_variant(jsonl_file)
 
-        if data_source is None or variant is None:
-            print(f"Warning: Could not detect source/variant from {jsonl_file}, skipping")
+        if data_source is None:
+            print(f"Warning: Could not detect source from {jsonl_file}, skipping")
+            continue
+
+        # Only process fill variant
+        if not is_fill_variant(jsonl_file):
+            print(f"Skipping {jsonl_file} (sentence variant)")
             continue
 
         if enabled_sources and data_source not in enabled_sources:
@@ -196,29 +275,37 @@ def process_split(source_dir, split_name, convert_fn, num_pointer_tokens,
         print(f"  Entries: {len(data)}")
 
         for sample in tqdm(data, desc=f"Converting {jsonl_file}"):
-            result = convert_fn(
-                sample, data_source, variant, num_pointer_tokens
-            )
+            result = convert_fn(sample, data_source)
             if result is not None:
                 all_converted.append(result)
-                stats_key = f"{data_source}_{variant}"
-                if stats_key in stats:
-                    stats[stats_key] += 1
+                if data_source in stats:
+                    stats[data_source] += 1
             else:
                 stats["skipped"] += 1
 
     return all_converted, stats
 
 
+def write_dataset_card(output_dir, splits):
+    """Write a HuggingFace dataset card (README.md) with explicit split definitions."""
+    data_files = "\n".join(
+        f"  - split: {split}\n    path: {filename}" for split, filename in splits
+    )
+    readme = f"""---
+license: apache-2.0
+configs:
+- config_name: default
+  data_files:
+{data_files}
+---
+"""
+    with open(Path(output_dir) / "README.md", "w") as f:
+        f.write(readme)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert SPAR-subset to Point3R format (train + eval)"
-    )
-    parser.add_argument(
-        "--num_pointer_tokens",
-        type=int,
-        default=1,
-        help="Number of pointer tokens per sample",
+        description="Convert SPAR-subset to Point3R MCA format (train + eval)"
     )
     parser.add_argument(
         "--exclude_scannetpp",
@@ -236,6 +323,12 @@ def main():
         type=str,
         default=None,
         help="Eval output path (default: data/evaluation/spar_subset_point3r/test.json)",
+    )
+    parser.add_argument(
+        "--eval_max_per_source",
+        type=int,
+        default=1500,
+        help="Max eval samples per data source. Set 0 for no limit. (default: 1500)",
     )
     args = parser.parse_args()
 
@@ -256,8 +349,7 @@ def main():
     print("=" * 60)
 
     train_converted, train_stats = process_split(
-        train_dir, "train", convert_train_sample,
-        args.num_pointer_tokens, enabled_sources,
+        train_dir, "train", convert_train_sample, enabled_sources,
     )
 
     train_output = Path(args.train_output) if args.train_output else (
@@ -280,9 +372,29 @@ def main():
     print("=" * 60)
 
     eval_converted, eval_stats = process_split(
-        val_dir, "val", convert_eval_sample,
-        args.num_pointer_tokens, enabled_sources,
+        val_dir, "val", convert_eval_sample, enabled_sources,
     )
+
+    # Subsample evaluation set per data source
+    if args.eval_max_per_source > 0:
+        rng = random.Random(42)
+        by_source = {}
+        for entry in eval_converted:
+            ds = entry["metadata"]["data_source"]
+            by_source.setdefault(ds, []).append(entry)
+
+        subsampled = []
+        eval_stats_sub = {"skipped": 0}
+        for ds, entries in sorted(by_source.items()):
+            if len(entries) > args.eval_max_per_source:
+                entries = rng.sample(entries, args.eval_max_per_source)
+            subsampled.extend(entries)
+            eval_stats_sub[ds] = len(entries)
+
+        print(f"\nSubsampled eval set ({args.eval_max_per_source} per source):")
+        print(f"  Before: {len(eval_converted)}, After: {len(subsampled)}")
+        eval_converted = subsampled
+        eval_stats = eval_stats_sub
 
     eval_output = Path(args.eval_output) if args.eval_output else (
         base / "evaluation" / "spar_subset_point3r" / "test.json"
@@ -292,6 +404,8 @@ def main():
     print(f"\nSaving evaluation data to: {eval_output}")
     with open(eval_output, "w") as f:
         json.dump(eval_converted, f, indent=2)
+
+    write_dataset_card(eval_output.parent, [("test", eval_output.name)])
 
     print(f"\nEvaluation Conversion Statistics:")
     for key, count in sorted(eval_stats.items()):
@@ -306,14 +420,12 @@ def main():
             print("=" * 60)
             shown = set()
             for item in data:
-                variant = item.get("question_type") or item.get("metadata", {}).get("variant", "")
-                ds = item.get("data_source") or item.get("metadata", {}).get("data_source", "")
-                key = f"{ds}_{variant}"
-                if key not in shown:
-                    shown.add(key)
-                    print(f"\n--- {key.upper()} ---")
-                    print(json.dumps(item, indent=2)[:800])
-                    if len(shown) >= 4:
+                ds = item.get("metadata", {}).get("data_source", "")
+                if ds not in shown:
+                    shown.add(ds)
+                    print(f"\n--- {ds.upper()} ---")
+                    print(json.dumps(item, indent=2)[:1000])
+                    if len(shown) >= 2:
                         break
 
 
