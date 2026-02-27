@@ -50,6 +50,9 @@ POINTER_FORMAT="${POINTER_FORMAT:-}"
 # --- Pointer Data Directory Override (optional) ---
 POINTER_DIR_NAME="${POINTER_DIR_NAME:-}"
 
+# --- Frame ID labels for pointer tokens (optional) ---
+ADD_FRAME_ID="${ADD_FRAME_ID:-}"
+
 # --- Geometry Encoder (optional, for VGGT) ---
 USE_GEOMETRY_ENCODER="${USE_GEOMETRY_ENCODER:-False}"
 GEOMETRY_ENCODER_TYPE="${GEOMETRY_ENCODER_TYPE:-}"
@@ -127,6 +130,7 @@ export TUNE_ROPE3D_CONTINUOUS="${TUNE_ROPE3D_CONTINUOUS}"
 export TUNE_POINTER_POSITION_ENCODER="${TUNE_POINTER_POSITION_ENCODER}"
 export POINTER_FORMAT="${POINTER_FORMAT}"
 export POINTER_DIR_NAME="${POINTER_DIR_NAME}"
+export ADD_FRAME_ID="${ADD_FRAME_ID}"
 export USE_GEOMETRY_ENCODER="${USE_GEOMETRY_ENCODER}"
 export GEOMETRY_ENCODER_TYPE="${GEOMETRY_ENCODER_TYPE}"
 export GEOMETRY_ENCODER_PATH="${GEOMETRY_ENCODER_PATH}"
@@ -212,6 +216,7 @@ CMD=(
 [[ -n "$TUNE_POINTER_POSITION_ENCODER" ]] && CMD+=(--tune_pointer_position_encoder "$TUNE_POINTER_POSITION_ENCODER")
 [[ -n "$POINTER_FORMAT" ]]                && CMD+=(--pointer_format "$POINTER_FORMAT")
 [[ -n "$POINTER_DIR_NAME" ]]             && CMD+=(--pointer_dir_name "$POINTER_DIR_NAME")
+[[ -n "$ADD_FRAME_ID" ]]                 && CMD+=(--add_frame_id "$ADD_FRAME_ID")
 [[ -n "$GEOMETRY_ENCODER_TYPE" ]]         && CMD+=(--geometry_encoder_type "$GEOMETRY_ENCODER_TYPE")
 [[ -n "$GEOMETRY_ENCODER_PATH" ]]         && CMD+=(--geometry_encoder_path "$GEOMETRY_ENCODER_PATH")
 [[ -n "$FEATURE_FUSION_METHOD" ]]         && CMD+=(--feature_fusion_method "$FEATURE_FUSION_METHOD")

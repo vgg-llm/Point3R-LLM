@@ -42,6 +42,7 @@ ROPE_MODE="${ROPE_MODE:-}"
 ROPE_POSITION_RANGE="${ROPE_POSITION_RANGE:-}"
 POINTER_FORMAT="${POINTER_FORMAT:-}"
 POINTER_DIR_NAME="${POINTER_DIR_NAME:-}"
+ADD_FRAME_ID="${ADD_FRAME_ID:-}"
 USE_POINTER_POSITION_ENCODING="${USE_POINTER_POSITION_ENCODING:-}"
 
 # --- Extra model args passthrough ---
@@ -81,6 +82,7 @@ model_args_str="${model_args_str},memory_fusion_method=${MEMORY_FUSION_METHOD}"
 [[ -n "$ROPE_POSITION_RANGE" ]] && model_args_str="${model_args_str},rope_position_range=${ROPE_POSITION_RANGE}"
 [[ -n "$POINTER_FORMAT" ]]      && model_args_str="${model_args_str},pointer_format=${POINTER_FORMAT}"
 [[ -n "$POINTER_DIR_NAME" ]]              && model_args_str="${model_args_str},pointer_dir_name=${POINTER_DIR_NAME}"
+[[ -n "$ADD_FRAME_ID" ]]                  && model_args_str="${model_args_str},add_frame_id=${ADD_FRAME_ID}"
 [[ -n "$USE_POINTER_POSITION_ENCODING" ]] && model_args_str="${model_args_str},use_pointer_position_encoding=${USE_POINTER_POSITION_ENCODING}"
 
 # --- Handle scanrefer special case ---
@@ -124,6 +126,7 @@ export ROPE_MODE="${ROPE_MODE}"
 export ROPE_POSITION_RANGE="${ROPE_POSITION_RANGE}"
 export POINTER_FORMAT="${POINTER_FORMAT}"
 export POINTER_DIR_NAME="${POINTER_DIR_NAME}"
+export ADD_FRAME_ID="${ADD_FRAME_ID}"
 export USE_POINTER_POSITION_ENCODING="${USE_POINTER_POSITION_ENCODING}"
 export EXTRA_MODEL_ARGS="${EXTRA_MODEL_ARGS}"
 

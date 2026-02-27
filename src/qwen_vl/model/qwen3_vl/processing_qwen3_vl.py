@@ -342,9 +342,10 @@ class Qwen3VLProcessorWithPoint3R(Qwen3VLProcessor):
             in a chat into a tokenizable string.
     """
 
-    def __init__(self, image_processor=None, tokenizer=None, video_processor=None, chat_template=None, pointer_format="video", **kwargs):
+    def __init__(self, image_processor=None, tokenizer=None, video_processor=None, chat_template=None, pointer_format="video", add_frame_id=False, **kwargs):
         self.pointer_token = "<|pointer_pad|>"
         self.pointer_format = pointer_format
+        self.add_frame_id = add_frame_id
         super().__init__(image_processor, tokenizer, video_processor, chat_template=chat_template, **kwargs)
         self.tokenizer.add_special_tokens({"additional_special_tokens": [self.pointer_token]})
         # Store the pointer token ID for later use
@@ -473,17 +474,22 @@ class Qwen3VLProcessorWithPoint3R(Qwen3VLProcessor):
 
                 # Build grouped placeholder: <time><vision_start><pointer>*N<vision_end> per group
                 pointer_placeholder = ""
-                for ts in unique_timestamps:
+                for frame_idx, ts in enumerate(unique_timestamps, start=1):
                     count = (pointer_timestamps == ts).sum().item()
-                    ts_val = ts.item()
 
-                    # Convert frame index to seconds
-                    if frames_indices is not None and int(ts_val) < len(frames_indices):
-                        time_seconds = frames_indices[int(ts_val)] / fps
+                    if self.add_frame_id:
+                        pointer_placeholder += f"<frame-{frame_idx}>"
                     else:
-                        time_seconds = ts_val / fps
+                        ts_val = ts.item()
 
-                    pointer_placeholder += f"<{time_seconds:.1f} seconds>"
+                        # Convert frame index to seconds
+                        if frames_indices is not None and int(ts_val) < len(frames_indices):
+                            time_seconds = frames_indices[int(ts_val)] / fps
+                        else:
+                            time_seconds = ts_val / fps
+
+                        pointer_placeholder += f"<{time_seconds:.1f} seconds>"
+
                     pointer_placeholder += (
                         self.vision_start_token + "<|placeholder|>" * count + self.vision_end_token
                     )

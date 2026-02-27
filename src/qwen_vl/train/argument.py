@@ -65,6 +65,12 @@ class ModelArguments:
                           "(e.g., 'pointer_memory_qwen3vl_lambda0.0')"}
     )
 
+    # Frame ID labels for pointer tokens
+    add_frame_id: bool = field(
+        default=False,
+        metadata={"help": "Use <frame-N> labels instead of <X.X seconds> timestamps for pointer token groups"}
+    )
+
     # RoPE ablation parameters for pointer tokens
     rope_mode: str = field(
         default="none",

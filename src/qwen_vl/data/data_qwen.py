@@ -150,6 +150,7 @@ class LazySupervisedDataset(Dataset):
         self.model_type = data_args.model_type
         self.pointer_format = getattr(data_args, "pointer_format", "video")
         self.pointer_dir_name = getattr(data_args, "pointer_dir_name", None)
+        self.add_frame_id = getattr(data_args, "add_frame_id", False)
         if data_args.model_type == "qwen3vl":
             self.get_rope_index = get_rope_index_qwen3vl
         elif data_args.model_type == "qwen3vl-rope-discrete":
@@ -562,6 +563,7 @@ class LazySupervisedDataset(Dataset):
                             content, pointer_timestamps,
                             frames_indices=frames_indices,
                             pointer_token=pointer_token,
+                            add_frame_id=self.add_frame_id,
                         )
                     else:
                         content = expand_pointer_tokens(content, num_pointer_tokens, pointer_token)

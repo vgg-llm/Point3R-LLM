@@ -152,6 +152,7 @@ def expand_pointer_tokens_grouped(
     pointer_token: str = "<|pointer_pad|>",
     vision_start_token: str = "<|vision_start|>",
     vision_end_token: str = "<|vision_end|>",
+    add_frame_id: bool = False,
 ) -> str:
     """Expand a single pointer placeholder to timestamp-grouped pointer tokens.
 
@@ -168,6 +169,7 @@ def expand_pointer_tokens_grouped(
         pointer_token: The pointer token string
         vision_start_token: Vision start marker
         vision_end_token: Vision end marker
+        add_frame_id: If True, use <frame-N> (1-indexed) instead of <X.X seconds>
 
     Returns:
         Content with grouped pointer tokens
@@ -176,6 +178,8 @@ def expand_pointer_tokens_grouped(
         >>> ts = torch.tensor([0, 0, 0, 1, 1, 2, 2, 2, 2])
         >>> expand_pointer_tokens_grouped("Here <|pointer_pad|> scene", ts)
         "Here <0.0 seconds><|vision_start|><|pointer_pad|>*3<|vision_end|><1.0 seconds>... scene"
+        >>> expand_pointer_tokens_grouped("Here <|pointer_pad|> scene", ts, add_frame_id=True)
+        "Here <frame-1><|vision_start|><|pointer_pad|>*3<|vision_end|><frame-2>... scene"
     """
     if pointer_token not in content:
         return content
@@ -188,17 +192,22 @@ def expand_pointer_tokens_grouped(
     # Group tokens by timestamp
     unique_timestamps = pointer_timestamps.unique(sorted=True)
     grouped_placeholder = ""
-    for ts in unique_timestamps:
+    for frame_idx, ts in enumerate(unique_timestamps, start=1):
         count = (pointer_timestamps == ts).sum().item()
-        ts_val = ts.item()
 
-        # Convert frame index to seconds
-        if frames_indices is not None and int(ts_val) < len(frames_indices):
-            time_seconds = frames_indices[int(ts_val)] / pointer_fps
+        if add_frame_id:
+            grouped_placeholder += f"<frame-{frame_idx}>"
         else:
-            time_seconds = ts_val / pointer_fps
+            ts_val = ts.item()
 
-        grouped_placeholder += f"<{time_seconds:.1f} seconds>"
+            # Convert frame index to seconds
+            if frames_indices is not None and int(ts_val) < len(frames_indices):
+                time_seconds = frames_indices[int(ts_val)] / pointer_fps
+            else:
+                time_seconds = ts_val / pointer_fps
+
+            grouped_placeholder += f"<{time_seconds:.1f} seconds>"
+
         grouped_placeholder += (
             vision_start_token + pointer_token * count + vision_end_token
         )

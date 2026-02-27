@@ -135,6 +135,8 @@ class Point3RLLMv2(lmms):
         pointer_format: str = "video",
         # Pointer data directory override
         pointer_dir_name: Optional[str] = None,
+        # Frame ID labels for pointer tokens
+        add_frame_id: bool = False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -225,6 +227,7 @@ class Point3RLLMv2(lmms):
 
         # Pointer format config
         self.pointer_format = pointer_format
+        self.add_frame_id = add_frame_id
 
         # Load Point3R-enhanced model
         eval_logger.info("Using Qwen3VLForConditionalGenerationWithPoint3R")
@@ -264,6 +267,7 @@ class Point3RLLMv2(lmms):
             video_processor=base_processor.video_processor,
             chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
             pointer_format=self.pointer_format,
+            add_frame_id=self.add_frame_id,
         )
         self._tokenizer = self.processor.tokenizer
 

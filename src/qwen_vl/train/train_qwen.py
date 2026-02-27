@@ -239,6 +239,7 @@ def train(attn_implementation="flash_attention_2"):
                 video_processor=base_processor.video_processor if hasattr(base_processor, 'video_processor') else None,
                 chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
                 pointer_format=getattr(model_args, "pointer_format", "video"),
+                add_frame_id=getattr(model_args, "add_frame_id", False),
             )
 
             # Store pointer token ID in model config for proper processing
@@ -269,6 +270,8 @@ def train(attn_implementation="flash_attention_2"):
             data_args.pointer_format = getattr(model_args, "pointer_format", "video")
             # Pass pointer directory name override to data pipeline
             data_args.pointer_dir_name = getattr(model_args, "pointer_dir_name", None)
+            # Pass frame ID label option to data pipeline
+            data_args.add_frame_id = getattr(model_args, "add_frame_id", False)
         elif model_args.use_geometry_encoder:
             from qwen_vl.model.qwen3_vl.modeling_qwen_vggt import Qwen3VLForConditionalGenerationWithVGGT
 
