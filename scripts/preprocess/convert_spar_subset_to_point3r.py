@@ -89,6 +89,7 @@ def build_mcq(correct_order, sample_id):
     rng = random.Random(hash(sample_id))
 
     objects = list(correct_order)
+    rng.shuffle(objects)
     objects_str = ", ".join(objects)
     question = QUESTION_TEMPLATE.format(objects=objects_str)
 
