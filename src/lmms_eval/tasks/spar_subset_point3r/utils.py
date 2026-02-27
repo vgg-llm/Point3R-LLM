@@ -46,6 +46,7 @@ def spar_subset_process_results(doc, results):
     """Process results for a single document."""
     doc["prediction"] = results[0]
     doc["accuracy"] = exact_match(fuzzy_matching(doc["prediction"]), doc["ground_truth"])
+    doc["data_source"] = doc["metadata"]["data_source"]
     return {"spar_subset_point3r_score": doc}
 
 

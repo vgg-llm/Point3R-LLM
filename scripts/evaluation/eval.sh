@@ -48,6 +48,9 @@ USE_POINTER_POSITION_ENCODING="${USE_POINTER_POSITION_ENCODING:-}"
 # --- Extra model args passthrough ---
 EXTRA_MODEL_ARGS="${EXTRA_MODEL_ARGS:-}"
 
+# --- Sample limit (optional, for smoke tests) ---
+EVAL_LIMIT="${EVAL_LIMIT:-}"
+
 # --- Output path ---
 if [[ -z "$OUTPUT_PATH" ]]; then
     MODEL_BASENAME="$(basename "$MODEL_PATH")"
@@ -164,6 +167,7 @@ else
         --log_samples_suffix "$LOG_SUFFIX" \
         --log_samples \
         --output_path "$OUTPUT_PATH" \
+        ${EVAL_LIMIT:+--limit "$EVAL_LIMIT"} \
         2>&1 | tee "${OUTPUT_PATH}/eval.log"
     echo "============================================="
     echo "Evaluation completed!"
