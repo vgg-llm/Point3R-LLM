@@ -1,38 +1,33 @@
 #!/bin/bash
-#SBATCH --job-name=Point3R-LLM-8b_memfeat_appearance_order_experiment
-#SBATCH -o sbatch_log/appr_order_exp-8b-memfeat-spar.%j.out
+#SBATCH --job-name="Balanced VSI-bench Training and evaluation on pointer_memory_600patch"
+#SBATCH -o sbatch_log/vsibench_balanced_memfeat_600patch.%j.out
 #SBATCH --partition=cms_cvlab
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1
 
-# Experiment: 8B with memory features on Scan2Cap
+# Experiment: 8B with memory features on VSIbench-balanced
 
 source venv/bin/activate
 
-export EXP_NAME="appr_order_spar_subset_formatted"
+export EXP_NAME="vsibench_balanced_memfeat_600patch"
 export MODEL_PATH="Qwen/Qwen3-VL-8B-Instruct"
-export DATASETS="spar_subset_point3r"
+export DATASETS="vsibench_balanced_point3r"
 
 # Memory features
 export MERGE_MEMORY_FEAT="True"
 export MEMORY_FUSION_METHOD="add"
 
 # Evaluation
-export BENCHMARKS="spar_subset_point3r,vsibench_point3r"
+export BENCHMARKS="vsibench_point3r"
 export EVAL_MODEL_TYPE="point3r_llm_v2"
 export POINTER_DIR_NAME="pointer_memory_600patch"
 
 # --- Train ---
-# bash scripts/train/train.sh
+bash scripts/train/train.sh
 
 # --- Evaluate ---
 export MODEL_PATH="./outputs/${EXP_NAME}"
 bash scripts/evaluation/eval.sh
-
-# --- Evaluate: video-frame-pe ---
-export ROPE_MODE="pointer_timestamp"
-bash scripts/evaluation/eval.sh
-
 
 nvidia-smi
 date
