@@ -14,11 +14,7 @@ import sys
 from .inference import inference, get_pred_pts3d
 from .point3r import LocalMemory
 from .utils.geometry import geotrf
-import viser
-import viser.transforms as tf
 from typing import List, Dict
-import matplotlib.cm as cm
-import time
 
 
 def prepare_images_for_point3r(image_inputs, target_size=(640, 480), crop_border=20):
@@ -85,6 +81,354 @@ def prepare_images_for_point3r(image_inputs, target_size=(640, 480), crop_border
     return views
 
 
+def visualize_point3r_viser(
+    pointer_data,
+    annotation_result=None,
+    scannet_pth_path=None,
+    scannet_pose_paths=None,
+):
+    """
+    Launch an interactive viser 3D visualization of Point3R outputs.
+
+    Call this after extract_pointer_memory() with its return dict.
+
+    Args:
+        pointer_data: Return dict from extract_pointer_memory (must include '_point3r_outputs').
+        annotation_result: Output from extract_box_and_coordinates_from_scan2cap for visualization.
+        scannet_pth_path: Path to ScanNet .pth file for GT point cloud visualization.
+        scannet_pose_paths: List of paths to ScanNet pose .txt files with camera poses.
+    """
+    import viser
+    import viser.transforms as tf
+    import matplotlib.cm as cm
+    import time
+
+    outputs = pointer_data['_point3r_outputs']
+    pointer_positions = pointer_data['pointer_positions']
+    camera_poses = pointer_data.get('camera_poses')
+
+    viser_start_time = time.time()
+    server = viser.ViserServer()
+
+    if annotation_result is not None:
+        # Get transformation matrices from the first element (already computed as numpy arrays)
+        first_elem = annotation_result['all_elements'][0]
+        global2cam = first_elem['global2cam']
+        ref_cam2global = first_elem['ref_cam2global']
+        axis_align_matrix = first_elem['axis_align']
+
+        # Visualize ScanNet pose files if provided
+        if scannet_pose_paths is not None and len(scannet_pose_paths) > 0:
+            print(f"Loading {len(scannet_pose_paths)} ScanNet pose files...")
+            gt_frustums: List[viser.CameraFrustumHandle] = []
+            for i, pose_path in enumerate(scannet_pose_paths):
+                try:
+                    # Load 4x4 pose matrix from txt file
+                    pose_matrix = np.loadtxt(pose_path)
+                    if pose_matrix.shape == (4, 4):
+                        aligned_pose_matrix = axis_align_matrix @ pose_matrix
+                        aligned_pose_se3 = tf.SE3.from_matrix(aligned_pose_matrix)
+                        h, w = 480, 640
+                        fy = 1.1 * h
+                        fov = 2 * np.arctan2(h / 2, fy)
+                        gt_frustum = server.scene.add_camera_frustum(
+                            f"gt_camera_{i}",
+                            fov=fov,
+                            aspect=w / h,
+                            scale=0.05,
+                            image=None,
+                            line_width=1.0,
+                            color=(255, 165, 0),  # Orange color for GT poses
+                            position=aligned_pose_se3.translation(),
+                            wxyz=aligned_pose_se3.rotation().wxyz
+                        )
+                        gt_frustums.append(gt_frustum)
+                    if i == 0:
+                        ref_cam2global = pose_matrix
+                        ref_cam2global_se3 = tf.SE3.from_matrix(ref_cam2global)
+                        print('Overwrite ref_cam2global')
+                        print(f"GT ref.frame camera pose: {pose_se3}")
+                        print(f"Given ref.frame camera pose: {ref_cam2global_se3}")
+
+
+                except Exception as e:
+                    print(f"  Warning: Failed to load pose from {pose_path}: {e}")
+            print(f"  Added {len(gt_frustums)} GT camera frustums (orange)")
+
+
+        extrinsic = axis_align_matrix @ ref_cam2global
+        extrinsic_se3 = tf.SE3.from_matrix(extrinsic)
+        align_wxyz = extrinsic_se3.rotation().wxyz
+        align_pos = extrinsic_se3.translation()
+        print('Current extrinsic:', align_wxyz, align_pos, sep='\n')
+    else:
+        axis_align_matrix = np.eye(4)
+        extrinsic_se3 = tf.SE3.from_matrix(np.eye(4))
+        align_wxyz = extrinsic_se3.rotation().wxyz
+        align_pos = extrinsic_se3.translation()
+        print('No annotation given.')
+
+    # Store per-frame data for timestamp visualization
+    per_frame_data = []
+    num_frames = len(outputs['pred'])
+
+    for idx, (pred, view) in enumerate(zip(outputs['pred'], outputs['views'])):
+        pts_3d = get_pred_pts3d(None, pred, use_pose=True)
+
+        # Original RGB image for frustum display (H, W, 3)
+        rgb_image = view['img'].permute(0, 2, 3, 1).squeeze(0)
+        rgb_image_np = (rgb_image.detach().cpu().numpy() * 255).astype(np.uint8)
+
+        # Points and colors (NO quantile filtering for interpretability)
+        pts_3d_np = pts_3d.detach().cpu().numpy().reshape(-1, 3)
+        color_rgb = rgb_image_np.reshape(-1, 3)
+
+        # Viridis color for this frame's points
+        norm_idx = idx / max(num_frames - 1, 1)
+        viridis_rgba = cm.viridis(norm_idx)
+        color_timestamp = np.full_like(color_rgb, (np.array(viridis_rgba[:3]) * 255).astype(np.uint8))
+
+        per_frame_data.append({
+            'pts_3d': pts_3d_np,
+            'colors_rgb': color_rgb,
+            'colors_timestamp': color_timestamp,
+            'rgb_image': rgb_image_np,
+            'frame_idx': idx,
+        })
+
+    # === GUI Controls ===
+    with server.gui.add_folder("Playback"):
+        gui_timestep = server.gui.add_slider("Timestep", min=0, max=num_frames-1, step=1, initial_value=num_frames-1)
+        gui_next_frame = server.gui.add_button("Next Frame")
+        gui_prev_frame = server.gui.add_button("Prev Frame")
+        gui_playing = server.gui.add_checkbox("Playing", False)
+        gui_framerate = server.gui.add_slider("FPS", min=0.5, max=100, step=0.5, initial_value=1)
+        gui_accumulative = server.gui.add_checkbox("Accumulative Mode", True)
+        gui_stride = server.gui.add_slider("Stride", min=1, max=max(num_frames, 1), step=1, initial_value=1)
+
+    with server.gui.add_folder("Visualization"):
+        gui_color_mode = server.gui.add_dropdown("Color Mode", options=["Original RGB", "Timestamp (viridis)"], initial_value="Original RGB")
+        gui_show_frustums = server.gui.add_checkbox("Show Frustums", True)
+        gui_point_size = server.gui.add_slider("Point Size", min=0.0005, max=0.01, step=0.0005, initial_value=0.001)
+        gui_frustum_scale = server.gui.add_slider("Frustum Scale", min=0.01, max=0.2, step=0.01, initial_value=0.05)
+
+    # Create parent frame for all timesteps
+    server.scene.add_frame("/frames", show_axes=False, wxyz=align_wxyz, position=align_pos)
+
+    frame_nodes: List[viser.FrameHandle] = []
+    point_cloud_handles: Dict[int, Dict[str, any]] = {}
+    frustum_handles: List[viser.CameraFrustumHandle] = []
+
+    for frame_data in per_frame_data:
+        idx = frame_data['frame_idx']
+
+        # Frame node for this timestep
+        frame_node = server.scene.add_frame(f"/frames/t{idx}", show_axes=False)
+        frame_nodes.append(frame_node)
+
+        # Point cloud with RGB colors
+        pc_rgb = server.scene.add_point_cloud(
+            name=f"/frames/t{idx}/points_rgb",
+            points=frame_data['pts_3d'],
+            colors=frame_data['colors_rgb'],
+            point_size=gui_point_size.value,
+            point_shape="rounded",
+            visible=True,
+        )
+
+        # Point cloud with timestamp colors (initially hidden)
+        pc_timestamp = server.scene.add_point_cloud(
+            name=f"/frames/t{idx}/points_timestamp",
+            points=frame_data['pts_3d'],
+            colors=frame_data['colors_timestamp'],
+            point_size=gui_point_size.value,
+            point_shape="rounded",
+            visible=False,
+        )
+
+        point_cloud_handles[idx] = {'rgb': pc_rgb, 'timestamp': pc_timestamp}
+
+        # Camera frustum with RGB image and viridis-colored edge
+        if camera_poses is not None:
+            pose = camera_poses[idx].numpy()
+            pose_se3 = extrinsic_se3 @ tf.SE3(np.concatenate([pose[3:], pose[:3]]))
+
+            norm_idx = idx / max(num_frames - 1, 1)
+            frustum_color = tuple((np.array(cm.viridis(norm_idx)[:3]) * 255).astype(int))
+
+            h, w = frame_data['rgb_image'].shape[:2]
+            fy = 1.1 * h
+            fov = 2 * np.arctan2(h / 2, fy)
+
+            frustum = server.scene.add_camera_frustum(
+                f"/frames/t{idx}/frustum",
+                fov=fov,
+                aspect=w / h,
+                scale=gui_frustum_scale.value,
+                image=frame_data['rgb_image'],
+                line_width=2.0,
+                color=frustum_color,
+                position=pose_se3.translation(),
+                wxyz=pose_se3.rotation().wxyz,
+            )
+            frustum_handles.append(frustum)
+
+
+    server.scene.add_point_cloud(
+        name=f"pointer_memory_anchor",
+        points=pointer_positions.numpy(),
+        colors=(255, 0, 0),
+        point_size=0.02,
+        visible=True,
+        wxyz=align_wxyz,
+        position=align_pos
+
+    )
+
+    # Visualize annotation data if provided
+    point_array = np.array([[0, 0, 0]])
+    if annotation_result is not None:
+        # Get all elements from annotation result
+        all_elements = annotation_result.get('all_elements', [])
+        framewise_elements = annotation_result.get('by_pointer_data')
+        for elem in all_elements:
+            obj_id = elem.get('metadata', {}).get('object_id', 'unknown')
+            box_center = elem.get('box_center')
+            transformed_box_center = elem.get('transformed_center')
+            if transformed_box_center is not None:
+                pos = tuple(transformed_box_center)
+                server.scene.add_point_cloud(
+                    name=f'obj_{obj_id} (camera_aligned)',
+                    points=point_array,
+                    point_size=0.05,
+                    colors=(0, 255, 0),
+                    position=pos,
+                    visible=False
+                )
+
+    # Visualize ScanNet GT point cloud if path provided
+    if scannet_pth_path is not None:
+        import os
+        if os.path.exists(scannet_pth_path):
+            print(f"Loading ScanNet GT point cloud from {scannet_pth_path}...")
+            gt_data = torch.load(scannet_pth_path, weights_only=False)
+
+            gt_xyz = gt_data['xyz']
+            gt_rgb = gt_data['rgb']
+
+            server.scene.add_point_cloud(
+                name="gt_point_cloud",
+                points=gt_xyz,
+                colors=gt_rgb,
+                point_size=0.01,
+                visible=True
+            )
+            print(f"  Added GT point cloud: {gt_xyz.shape[0]} points")
+
+            # Add AABBs if available
+            if 'aabb_corner_xyz' in gt_data and 'aabb_obj_ids' in gt_data:
+                aabb_corners = gt_data['aabb_corner_xyz']
+                aabb_obj_ids = gt_data['aabb_obj_ids']
+
+                aabb_colors = [
+                    (255, 100, 100),  # Light red
+                    (100, 255, 100),  # Light green
+                    (100, 100, 255),  # Light blue
+                    (255, 255, 100),  # Yellow
+                    (255, 100, 255),  # Magenta
+                    (100, 255, 255),  # Cyan
+                ]
+
+                # AABB edges: 12 edges connecting 8 corners
+                edges = [
+                    (0, 1), (1, 3), (3, 2), (2, 0),  # Bottom face
+                    (4, 5), (5, 7), (7, 6), (6, 4),  # Top face
+                    (0, 4), (1, 5), (2, 6), (3, 7)   # Vertical edges
+                ]
+
+                for i, (obj_id, corners) in enumerate(zip(aabb_obj_ids, aabb_corners)):
+                    color = aabb_colors[i % len(aabb_colors)]
+                    edge_points = []
+                    for e0, e1 in edges:
+                        edge_points.append(np.array([corners[e0], corners[e1]]))
+                    edge_points = np.stack(edge_points, axis=0)
+
+                    server.scene.add_line_segments(
+                        name=f"gt_aabb_{obj_id}",
+                        points=edge_points,
+                        colors=color,
+                        line_width=2.0,
+                        visible=True
+                    )
+                print(f"  Added {len(aabb_obj_ids)} GT AABBs")
+        else:
+            print(f"Warning: ScanNet GT path not found: {scannet_pth_path}")
+
+    # === Event Handlers ===
+    def update_frame_visibility():
+        """Update frame visibility based on current mode and timestep."""
+        current = gui_timestep.value
+        stride = gui_stride.value
+        with server.atomic():
+            for i, frame_node in enumerate(frame_nodes):
+                if gui_accumulative.value:
+                    frame_node.visible = (i <= current) and (i % stride == 0)
+                else:
+                    frame_node.visible = (i == current)
+        server.flush()
+
+    @gui_next_frame.on_click
+    def _(_):
+        gui_timestep.value = (gui_timestep.value + 1) % num_frames
+
+    @gui_prev_frame.on_click
+    def _(_):
+        gui_timestep.value = (gui_timestep.value - 1) % num_frames
+
+    @gui_timestep.on_update
+    def _(_):
+        update_frame_visibility()
+
+    @gui_accumulative.on_update
+    def _(_):
+        update_frame_visibility()
+
+    @gui_stride.on_update
+    def _(_):
+        update_frame_visibility()
+
+    @gui_color_mode.on_update
+    def _(_):
+        use_timestamp = (gui_color_mode.value == "Timestamp (viridis)")
+        with server.atomic():
+            for idx in point_cloud_handles:
+                point_cloud_handles[idx]['rgb'].visible = not use_timestamp
+                point_cloud_handles[idx]['timestamp'].visible = use_timestamp
+        server.flush()
+
+    @gui_show_frustums.on_update
+    def _(_):
+        with server.atomic():
+            for frustum in frustum_handles:
+                frustum.visible = gui_show_frustums.value
+
+    # Initialize visibility
+    update_frame_visibility()
+
+    print(f"\nViser server running at: http://localhost:8080")
+    print("Press Ctrl+C to stop visualization and continue...")
+
+    try:
+        while True:
+            if gui_playing.value:
+                gui_timestep.value = (gui_timestep.value + 1) % num_frames
+            time.sleep(1.0 / gui_framerate.value)
+    except KeyboardInterrupt:
+        viser_elapsed = time.time() - viser_start_time
+        print(f"\nVisualization stopped after {viser_elapsed:.2f} seconds")
+        print(f"(Subtract this from total preprocessing time for actual processing time)")
+
+
 def extract_pointer_memory(
     image_inputs,
     point3r_model,
@@ -96,10 +440,6 @@ def extract_pointer_memory(
     full_seq=False,
     size=512,
     verbose=True,
-    use_viser=False,
-    annotation_result=None,
-    scannet_pth_path=None,
-    scannet_pose_paths=None,
     lambda_decay=1.0,
     max_memory_tokens=None,
     frames_indices=None,
@@ -318,347 +658,7 @@ def extract_pointer_memory(
             if verbose:
                 print(f"No camera poses found (pose_head may be disabled)")
     else:
-        camera_poses = None  
-
-    if use_viser:
-        viser_start_time = time.time()
-        server = viser.ViserServer()
-
-        if annotation_result is not None:
-            # Get transformation matrices from the first element (already computed as numpy arrays)
-            first_elem = annotation_result['all_elements'][0]
-            global2cam = first_elem['global2cam']
-            ref_cam2global = first_elem['ref_cam2global']
-            axis_align_matrix = first_elem['axis_align']
-            # extrinsic = axis_align_matrix @ ref_cam2global
-            # global2cam_computed = np.linalg.inv(extrinsic)
-
-            # apply axis_align_matrix to the PCD -> axis aligned
-            # extrinsic: current camera position w.r.t. 
-            # Visualize ScanNet pose files if provided
-            if scannet_pose_paths is not None and len(scannet_pose_paths) > 0:
-                print(f"Loading {len(scannet_pose_paths)} ScanNet pose files...")
-                gt_frustums: List[viser.CameraFrustumHandle] = []
-                for i, pose_path in enumerate(scannet_pose_paths):
-                    try:
-                        # Load 4x4 pose matrix from txt file
-                        pose_matrix = np.loadtxt(pose_path)
-                        if pose_matrix.shape == (4, 4):
-                            aligned_pose_matrix = axis_align_matrix @ pose_matrix
-                            aligned_pose_se3 = tf.SE3.from_matrix(aligned_pose_matrix)
-                            h, w = 480, 640
-                            fy = 1.1 * h
-                            fov = 2 * np.arctan2(h / 2, fy)
-                            gt_frustum = server.scene.add_camera_frustum(
-                                f"gt_camera_{i}",
-                                fov=fov,
-                                aspect=w / h,
-                                scale=0.05,
-                                image=None,
-                                line_width=1.0,
-                                color=(255, 165, 0),  # Orange color for GT poses
-                                position=aligned_pose_se3.translation(),
-                                wxyz=aligned_pose_se3.rotation().wxyz
-                            )
-                            gt_frustums.append(gt_frustum)
-                        if i == 0:
-                            ref_cam2global = pose_matrix
-                            ref_cam2global_se3 = tf.SE3.from_matrix(ref_cam2global)
-                            print('Overwrite ref_cam2global')
-                            print(f"GT ref.frame camera pose: {pose_se3}")
-                            print(f"Given ref.frame camera pose: {ref_cam2global_se3}")
-
-
-                    except Exception as e:
-                        print(f"  Warning: Failed to load pose from {pose_path}: {e}")
-                print(f"  Added {len(gt_frustums)} GT camera frustums (orange)")
-
-            
-            extrinsic = axis_align_matrix @ ref_cam2global
-            extrinsic_se3 = tf.SE3.from_matrix(extrinsic)
-            # extrinsic_se3 = extrinsic_se3.inverse()
-            align_wxyz = extrinsic_se3.rotation().wxyz
-            align_pos = extrinsic_se3.translation()
-            print('Current extrinsic:', align_wxyz, align_pos, sep='\n')
-        else:
-            axis_align_matrix = np.eye(4)
-            extrinsic_se3 = tf.SE3.from_matrix(np.eye(4))
-            align_wxyz = extrinsic_se3.rotation().wxyz
-            align_pos = extrinsic_se3.translation()
-            print('No annotation given.')
-
-        # Store per-frame data for timestamp visualization
-        per_frame_data = []
-        num_frames = len(outputs['pred'])
-
-        for idx, (pred, view) in enumerate(zip(outputs['pred'], outputs['views'])):
-            pts_3d = get_pred_pts3d(None, pred, use_pose=True)
-
-            # Original RGB image for frustum display (H, W, 3)
-            rgb_image = view['img'].permute(0, 2, 3, 1).squeeze(0)
-            rgb_image_np = (rgb_image.detach().cpu().numpy() * 255).astype(np.uint8)
-
-            # Points and colors (NO quantile filtering for interpretability)
-            pts_3d_np = pts_3d.detach().cpu().numpy().reshape(-1, 3)
-            color_rgb = rgb_image_np.reshape(-1, 3)
-
-            # Viridis color for this frame's points
-            norm_idx = idx / max(num_frames - 1, 1)
-            viridis_rgba = cm.viridis(norm_idx)
-            color_timestamp = np.full_like(color_rgb, (np.array(viridis_rgba[:3]) * 255).astype(np.uint8))
-
-            per_frame_data.append({
-                'pts_3d': pts_3d_np,
-                'colors_rgb': color_rgb,
-                'colors_timestamp': color_timestamp,
-                'rgb_image': rgb_image_np,
-                'frame_idx': idx,
-            })
-
-        # === GUI Controls ===
-        with server.gui.add_folder("Playback"):
-            gui_timestep = server.gui.add_slider("Timestep", min=0, max=num_frames-1, step=1, initial_value=num_frames-1)
-            gui_next_frame = server.gui.add_button("Next Frame")
-            gui_prev_frame = server.gui.add_button("Prev Frame")
-            gui_playing = server.gui.add_checkbox("Playing", False)
-            gui_framerate = server.gui.add_slider("FPS", min=0.5, max=100, step=0.5, initial_value=1)
-            gui_accumulative = server.gui.add_checkbox("Accumulative Mode", True)
-            gui_stride = server.gui.add_slider("Stride", min=1, max=max(num_frames, 1), step=1, initial_value=1)
-
-        with server.gui.add_folder("Visualization"):
-            gui_color_mode = server.gui.add_dropdown("Color Mode", options=["Original RGB", "Timestamp (viridis)"], initial_value="Original RGB")
-            gui_show_frustums = server.gui.add_checkbox("Show Frustums", True)
-            gui_point_size = server.gui.add_slider("Point Size", min=0.0005, max=0.01, step=0.0005, initial_value=0.001)
-            gui_frustum_scale = server.gui.add_slider("Frustum Scale", min=0.01, max=0.2, step=0.01, initial_value=0.05)
-
-        # Create parent frame for all timesteps
-        server.scene.add_frame("/frames", show_axes=False, wxyz=align_wxyz, position=align_pos)
-
-        frame_nodes: List[viser.FrameHandle] = []
-        point_cloud_handles: Dict[int, Dict[str, any]] = {}
-        frustum_handles: List[viser.CameraFrustumHandle] = []
-
-        for frame_data in per_frame_data:
-            idx = frame_data['frame_idx']
-
-            # Frame node for this timestep
-            frame_node = server.scene.add_frame(f"/frames/t{idx}", show_axes=False)
-            frame_nodes.append(frame_node)
-
-            # Point cloud with RGB colors
-            pc_rgb = server.scene.add_point_cloud(
-                name=f"/frames/t{idx}/points_rgb",
-                points=frame_data['pts_3d'],
-                colors=frame_data['colors_rgb'],
-                point_size=gui_point_size.value,
-                point_shape="rounded",
-                visible=True,
-            )
-
-            # Point cloud with timestamp colors (initially hidden)
-            pc_timestamp = server.scene.add_point_cloud(
-                name=f"/frames/t{idx}/points_timestamp",
-                points=frame_data['pts_3d'],
-                colors=frame_data['colors_timestamp'],
-                point_size=gui_point_size.value,
-                point_shape="rounded",
-                visible=False,
-            )
-
-            point_cloud_handles[idx] = {'rgb': pc_rgb, 'timestamp': pc_timestamp}
-
-            # Camera frustum with RGB image and viridis-colored edge
-            if camera_poses is not None:
-                pose = camera_poses[idx].numpy()
-                pose_se3 = extrinsic_se3 @ tf.SE3(np.concatenate([pose[3:], pose[:3]]))
-
-                norm_idx = idx / max(num_frames - 1, 1)
-                frustum_color = tuple((np.array(cm.viridis(norm_idx)[:3]) * 255).astype(int))
-
-                h, w = frame_data['rgb_image'].shape[:2]
-                fy = 1.1 * h
-                fov = 2 * np.arctan2(h / 2, fy)
-
-                frustum = server.scene.add_camera_frustum(
-                    f"/frames/t{idx}/frustum",
-                    fov=fov,
-                    aspect=w / h,
-                    scale=gui_frustum_scale.value,
-                    image=frame_data['rgb_image'],
-                    line_width=2.0,
-                    color=frustum_color,
-                    position=pose_se3.translation(),
-                    wxyz=pose_se3.rotation().wxyz,
-                )
-                frustum_handles.append(frustum)
-        
-
-        server.scene.add_point_cloud(
-            name=f"pointer_memory_anchor",
-            points=pointer_positions.numpy(),
-            colors=(255, 0, 0),
-            point_size=0.02,
-            visible=True,
-            wxyz=align_wxyz,
-            position=align_pos
-
-        )
-
-        # Visualize annotation data if provided
-        point_array = np.array([[0, 0, 0]])
-        if annotation_result is not None:
-            # Get all elements from annotation result
-            all_elements = annotation_result.get('all_elements', [])
-            framewise_elements = annotation_result.get('by_pointer_data')
-            for elem in all_elements:
-                obj_id = elem.get('metadata', {}).get('object_id', 'unknown')
-                box_center = elem.get('box_center')
-                transformed_box_center = elem.get('transformed_center')
-                # if box_center is not None:
-                #     # box_center is in camera coordinates [x, y, z]
-                #     pos = tuple(box_center)
-                #     server.scene.add_point_cloud(
-                #         name=f'obj_{obj_id}',
-                #         points=point_array,
-                #         point_size=0.05,
-                #         colors=(0, 255, 0),
-                #         position=pos
-                #     )
-                if transformed_box_center is not None:
-                    # box_center is in camera coordinates [x, y, z]
-                    pos = tuple(transformed_box_center)
-                    server.scene.add_point_cloud(
-                        name=f'obj_{obj_id} (camera_aligned)',
-                        points=point_array,
-                        point_size=0.05,
-                        colors=(0, 255, 0),
-                        position=pos,
-                        visible=False
-                    )
-
-        # Visualize ScanNet GT point cloud if path provided
-        if scannet_pth_path is not None:
-            import os
-            if os.path.exists(scannet_pth_path):
-                print(f"Loading ScanNet GT point cloud from {scannet_pth_path}...")
-                gt_data = torch.load(scannet_pth_path, weights_only=False)
-
-                gt_xyz = gt_data['xyz']
-                gt_rgb = gt_data['rgb']
-
-                server.scene.add_point_cloud(
-                    name="gt_point_cloud",
-                    points=gt_xyz,
-                    colors=gt_rgb,
-                    point_size=0.01,
-                    visible=True
-                )
-                print(f"  Added GT point cloud: {gt_xyz.shape[0]} points")
-
-                # Add AABBs if available
-                if 'aabb_corner_xyz' in gt_data and 'aabb_obj_ids' in gt_data:
-                    aabb_corners = gt_data['aabb_corner_xyz']
-                    aabb_obj_ids = gt_data['aabb_obj_ids']
-
-                    aabb_colors = [
-                        (255, 100, 100),  # Light red
-                        (100, 255, 100),  # Light green
-                        (100, 100, 255),  # Light blue
-                        (255, 255, 100),  # Yellow
-                        (255, 100, 255),  # Magenta
-                        (100, 255, 255),  # Cyan
-                    ]
-
-                    # AABB edges: 12 edges connecting 8 corners
-                    edges = [
-                        (0, 1), (1, 3), (3, 2), (2, 0),  # Bottom face
-                        (4, 5), (5, 7), (7, 6), (6, 4),  # Top face
-                        (0, 4), (1, 5), (2, 6), (3, 7)   # Vertical edges
-                    ]
-
-                    for i, (obj_id, corners) in enumerate(zip(aabb_obj_ids, aabb_corners)):
-                        color = aabb_colors[i % len(aabb_colors)]
-                        edge_points = []
-                        for e0, e1 in edges:
-                            edge_points.append(np.array([corners[e0], corners[e1]]))
-                        edge_points = np.stack(edge_points, axis=0)
-
-                        server.scene.add_line_segments(
-                            name=f"gt_aabb_{obj_id}",
-                            points=edge_points,
-                            colors=color,
-                            line_width=2.0,
-                            visible=True
-                        )
-                    print(f"  Added {len(aabb_obj_ids)} GT AABBs")
-            else:
-                print(f"Warning: ScanNet GT path not found: {scannet_pth_path}")
-
-        # === Event Handlers ===
-        def update_frame_visibility():
-            """Update frame visibility based on current mode and timestep."""
-            current = gui_timestep.value
-            stride = gui_stride.value
-            with server.atomic():
-                for i, frame_node in enumerate(frame_nodes):
-                    if gui_accumulative.value:
-                        # Progressive: show frames 0 to current with stride
-                        frame_node.visible = (i <= current) and (i % stride == 0)
-                    else:
-                        # Playback: show only current frame
-                        frame_node.visible = (i == current)
-            server.flush()
-
-        @gui_next_frame.on_click
-        def _(_):
-            gui_timestep.value = (gui_timestep.value + 1) % num_frames
-
-        @gui_prev_frame.on_click
-        def _(_):
-            gui_timestep.value = (gui_timestep.value - 1) % num_frames
-
-        @gui_timestep.on_update
-        def _(_):
-            update_frame_visibility()
-
-        @gui_accumulative.on_update
-        def _(_):
-            update_frame_visibility()
-
-        @gui_stride.on_update
-        def _(_):
-            update_frame_visibility()
-
-        @gui_color_mode.on_update
-        def _(_):
-            use_timestamp = (gui_color_mode.value == "Timestamp (viridis)")
-            with server.atomic():
-                for idx in point_cloud_handles:
-                    point_cloud_handles[idx]['rgb'].visible = not use_timestamp
-                    point_cloud_handles[idx]['timestamp'].visible = use_timestamp
-            server.flush()
-
-        @gui_show_frustums.on_update
-        def _(_):
-            with server.atomic():
-                for frustum in frustum_handles:
-                    frustum.visible = gui_show_frustums.value
-
-        # Initialize visibility
-        update_frame_visibility()
-
-        print(f"\nViser server running at: http://localhost:8080")
-        print("Press Ctrl+C to stop visualization and continue...")
-
-        try:
-            while True:
-                if gui_playing.value:
-                    gui_timestep.value = (gui_timestep.value + 1) % num_frames
-                time.sleep(1.0 / gui_framerate.value)
-        except KeyboardInterrupt:
-            viser_elapsed = time.time() - viser_start_time
-            print(f"\nVisualization stopped after {viser_elapsed:.2f} seconds")
-            print(f"(Subtract this from total preprocessing time for actual processing time)")
+        camera_poses = None
 
     if verbose:
         print(f"Extracted pointer memory:")
@@ -675,6 +675,7 @@ def extract_pointer_memory(
     result = {
         'pointer_memory_embeds': pointer_memory_embeds,
         'pointer_positions': pointer_positions,
+        '_point3r_outputs': outputs,
     }
 
     # Add memory_feat if available

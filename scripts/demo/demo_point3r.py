@@ -19,11 +19,11 @@ from natsort import natsorted
 
 from transformers import AutoProcessor
 from qwen_vl.model.point3r.point3r import Point3R
-from qwen_vl.model.point3r.extract_memory import extract_pointer_memory
+from qwen_vl.model.point3r.extract_memory import extract_pointer_memory, visualize_point3r_viser
 from qwen_vl_utils import process_vision_info
 from time import time
 
-def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-Instruct", pointer_format="video", use_merge=True):
+def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-Instruct", pointer_format="video", use_merge=True, attn_implementation=None):
     """
     Load models for inference.
 
@@ -34,6 +34,8 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
                    Examples:
                    - "Qwen/Qwen2.5-VL-3B-Instruct" (base model)
                    - "outputs/scan2cap_point3r_all_frames" (fine-tuned)
+        attn_implementation: Attention implementation to use (e.g., "eager" for attention visualization).
+                            If None, uses model default (sdpa).
 
     Returns:
         model, processor, min_pixels, max_pixels, point3r_model (or None)
@@ -49,18 +51,22 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
         from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
         # Load model with memory-efficient settings
         print(f"Loading model from: {model_path}")
+        extra_kwargs = {}
+        if attn_implementation is not None:
+            extra_kwargs["attn_implementation"] = attn_implementation
         model = Qwen3VLForConditionalGenerationWithPoint3R.from_pretrained(
             model_path,
             cache_dir="./cache",
             torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
             device_map="auto" if device is None else device,  # Automatically distribute model across available devices
             low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
+            **extra_kwargs,
         )
 
         # Load the base processor first
         print("Loading processor...")
-        min_pixels = 768 * 32 * 32
-        max_pixels = 768 * 32 * 32
+        min_pixels = 192 * 32 * 32
+        max_pixels = 192 * 32 * 32
         # max_pixels = 1280 * 32 * 32
         # min_pixels = 256 * 28 * 28
         # max_pixels = 1280 * 28 * 28
@@ -84,12 +90,16 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
 
         # Load model with memory-efficient settings
         print(f"Loading model from: {model_path}")
+        extra_kwargs = {}
+        if attn_implementation is not None:
+            extra_kwargs["attn_implementation"] = attn_implementation
         model = Qwen2_5_VLForConditionalGenerationWithPoint3R.from_pretrained(
             model_path,
             cache_dir="./cache",
             torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
             device_map="auto" if device is None else device,  # Automatically distribute model across available devices
             low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
+            **extra_kwargs,
         )
 
         # Load the base processor first
@@ -357,14 +367,18 @@ def preprocess_images(
         no_crop=True,
         size=(expected_width,expected_height),
         verbose=True,
-        use_viser=use_viser,
-        annotation_result=annotation_result,
-        scannet_pth_path=scannet_pth_path,
-        scannet_pose_paths=pose_paths,
         lambda_decay=lambda_decay,
         max_memory_tokens=max_memory_tokens,
         frames_indices=frames_indices,
     )
+
+    if use_viser:
+        visualize_point3r_viser(
+            pointer_data,
+            annotation_result=annotation_result,
+            scannet_pth_path=scannet_pth_path,
+            scannet_pose_paths=pose_paths,
+        )
 
     # Log timestamp statistics for testing
     if 'pointer_timestamps' in pointer_data:
@@ -1003,7 +1017,7 @@ if __name__=='__main__':
     # Example 3: Preprocess images and run inference (original demo)
     # input_images_dir = "./data/demo_data/sample_data"
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
-    scene_id = "scene0000_01"
+    scene_id = "scene0000_00"
     sample_ct = 32
     pointer_format = "video"
     use_merge = True
