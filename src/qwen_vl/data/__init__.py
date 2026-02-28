@@ -123,6 +123,12 @@ SPAR_SUBSET_POINT3R = {
     "tag": "3d"
 }
 
+VSIBENCH_BALANCED_POINT3R = {
+    "annotation_path": "data/train/vsibench_train_balanced_point3r.json",
+    "data_path": "data/media",
+    "tag": "3d"
+}
+
 data_dict = {
     "cambrian_737k": CAMBRIAN_737K,
     "mp_doc": MP_DOC,
@@ -145,6 +151,7 @@ data_dict = {
     "vstibench": VSTIBENCH,
     "vstibench_point3r": VSTIBENCH_POINT3R,
     "spar_subset_point3r": SPAR_SUBSET_POINT3R,
+    "vsibench_balanced_point3r": VSIBENCH_BALANCED_POINT3R,
 }
 
 
