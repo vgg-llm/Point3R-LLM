@@ -274,7 +274,7 @@ def preprocess_images(
     ]
 
     print("Extracting image info from images...")
-    image_inputs, video_inputs = process_vision_info(vision_message, image_patch_size=32)
+    image_inputs, video_inputs, video_kwargs = process_vision_info(vision_message, image_patch_size=32, return_video_kwargs=True, return_video_metadata=True)
 
     # Process images in batches
     batch_size = 2  # Adjust based on available GPU memory
@@ -415,6 +415,167 @@ def preprocess_images(
         print("\nSkipping save (pointer_data_path is None)")
 
     # Return pointer_data for in-memory use
+    return pointer_data
+
+def preprocess_video(
+        model,
+        processor,
+        min_pixels,
+        max_pixels,
+        point3r_model,
+        input_video_path,
+        pointer_data_path = None,
+        use_viser = False,
+        unload_point3r_model = False,
+        lambda_decay = 1.0,
+        sample_ct = 32,
+        max_memory_tokens = None,
+    ):
+
+    from PIL import Image
+
+    print("\n" + "="*70)
+    print(f"Stage 1 (Video Feature Pre-processing)")
+    print("="*70)
+
+    stage1_start = time()
+
+    vision_message = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "video",
+                 "video": str(input_video_path), 
+                 "min_pixels": min_pixels,
+                 "max_pixels": max_pixels,
+                 "fps": 2
+                }
+            ],
+        }
+    ]
+    _, video_inputs, video_kwargs = process_vision_info(vision_message, image_patch_size=16, return_video_kwargs=True, return_video_metadata=True)
+
+    video_tensor, video_metadata = video_inputs[0]
+    # video_tensor is shape (T, C, H, W) with float values in [0, 255] (from fetch_video)
+    # Convert to PIL Images: permute to (H, W, C), clamp for BICUBIC overshoot, convert to uint8
+    image_inputs = [
+        Image.fromarray(video_tensor[i].permute(1, 2, 0).clamp(0, 255).byte().numpy())
+        for i in range(video_tensor.shape[0])
+    ]
+    frames_indices = video_metadata.get('frames_indices', list(range(len(image_inputs))))
+    if isinstance(frames_indices, torch.Tensor):
+        frames_indices = frames_indices.tolist()
+
+    print(f"Loaded {len(image_inputs)} frames from {input_video_path}")
+    print(f"video_metadata: {video_metadata}")
+
+    # Process frames in batches (same as preprocess_images)
+    batch_size = 2
+    image_embeds_list = []
+    deepstack_image_embeds = []
+    grid_thw_list = []
+
+    for i in range(0, len(image_inputs), batch_size):
+        batch_images = image_inputs[i:i+batch_size]
+
+        processed_batch = processor.image_processor(images=batch_images, min_pixels=min_pixels, max_pixels=max_pixels)
+
+        with torch.inference_mode():
+            model_device = next(model.visual.parameters()).device
+
+            pixel_values = processed_batch.pixel_values.type(model.visual.dtype)
+            pixel_values = pixel_values.to(model_device)
+            grid_thw = processed_batch.image_grid_thw
+
+            visual_output = model.visual(pixel_values, grid_thw=grid_thw)
+            batch_deepstack_image_embeds = None
+            if isinstance(visual_output, tuple):
+                batch_image_embeds, batch_deepstack_image_embeds = visual_output
+            else:
+                batch_image_embeds = visual_output
+
+            image_embeds_list.append(batch_image_embeds)
+            if batch_deepstack_image_embeds is not None:
+                if len(deepstack_image_embeds) == 0:
+                    deepstack_image_embeds = [[] for _ in range(len(batch_deepstack_image_embeds))]
+                for layer_idx, layer_embeds in enumerate(batch_deepstack_image_embeds):
+                    deepstack_image_embeds[layer_idx].append(layer_embeds)
+            grid_thw_list.append(grid_thw)
+
+    # Concatenate all batches
+    image_embeds = torch.cat(image_embeds_list, dim=0)
+    grid_thw = torch.cat(grid_thw_list, dim=0)
+
+    if deepstack_image_embeds:
+        deepstack_image_embeds = [
+            torch.cat(layer_embeds_list, dim=0) for layer_embeds_list in deepstack_image_embeds
+        ]
+
+    print("Extracting pointer memory from video frames...")
+
+    point3r_device = next(point3r_model.parameters()).device
+
+    image_embeds = image_embeds.to(point3r_device)
+    grid_thw = grid_thw.to(point3r_device)
+
+    if deepstack_image_embeds:
+        deepstack_image_embeds = [layer.to(point3r_device) for layer in deepstack_image_embeds]
+
+    assert (grid_thw == grid_thw[0]).all(), "Not all grid_thw entries are identical"
+    t, h, w = grid_thw[0].tolist()
+    print(f"t, h, w = {t}, {h}, {w}")
+    print("patch size:", processor.image_processor.patch_size)
+    expected_width = (w // processor.image_processor.merge_size) * processor.image_processor.patch_size
+    expected_height = (h // processor.image_processor.merge_size) * processor.image_processor.patch_size
+
+    pointer_data = extract_pointer_memory(
+        image_inputs=image_inputs,
+        point3r_model=point3r_model,
+        image_embeds=image_embeds,
+        grid_thw=grid_thw,
+        deepstack_image_embeds=deepstack_image_embeds if deepstack_image_embeds else None,
+        device=point3r_device,
+        no_crop=True,
+        size=(expected_width, expected_height),
+        verbose=True,
+        lambda_decay=lambda_decay,
+        max_memory_tokens=max_memory_tokens,
+        frames_indices=frames_indices,
+    )
+
+    if use_viser:
+        visualize_point3r_viser(pointer_data)
+
+    # Log timestamp statistics
+    if 'pointer_timestamps' in pointer_data:
+        timestamps = pointer_data['pointer_timestamps']
+        print(f"\n[Timestamp Tracking]")
+        print(f"  - Total tokens: {timestamps.shape[0]}")
+        print(f"  - Timestamp range: [{timestamps.min().item()}, {timestamps.max().item()}]")
+        print(f"  - Unique timestamps: {timestamps.unique().tolist()}")
+        print(f"tokens count: ", end="")
+        for ts in timestamps.unique().tolist():
+            count = (timestamps == ts).sum().item()
+            print(count, end=", ")
+        print()
+
+    if unload_point3r_model:
+        print("Unloading Point3R model to free GPU memory...")
+        del point3r_model
+    torch.cuda.empty_cache()
+
+    stage1_end = time()
+    print(f"Stage 1 (Video Feature Pre-processing) runtime: {stage1_end - stage1_start:.2f} seconds")
+
+    # Save pointer data to file if path is provided
+    if pointer_data_path is not None:
+        os.makedirs(os.path.dirname(pointer_data_path), exist_ok=True)
+        print(f"\nSaving pointer data to {pointer_data_path}...")
+        torch.save(pointer_data, pointer_data_path)
+        print("Pointer data saved successfully!")
+    else:
+        print("\nSkipping save (pointer_data_path is None)")
+
     return pointer_data
 
 def run_models(model,
@@ -1017,13 +1178,13 @@ if __name__=='__main__':
     # Example 3: Preprocess images and run inference (original demo)
     # input_images_dir = "./data/demo_data/sample_data"
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
-    scene_id = "scene0000_00"
-    sample_ct = 32
-    pointer_format = "video"
-    use_merge = True
-    postfix = "_compact" if use_merge else ""
-    input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
-    pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}.pt"
+    # scene_id = "scene0000_00"
+    # sample_ct = 32
+    # pointer_format = "video"
+    # use_merge = True
+    # postfix = "_compact" if use_merge else ""
+    # input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
+    # pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}.pt"
 
     # scene_id = "ac48a9b736"
     # sample_ct = 32
@@ -1033,16 +1194,27 @@ if __name__=='__main__':
     # # pointer_data_path = "./data/demo_data/arkit_47895700.pt"
     # input_images_dir = f"./data/demo_data/scannetpp_{scene_id}"
     # pointer_data_path = f"./data/demo_data/scannetpp_{scene_id}.pt"
-    
+
+    sample_ct = 32
+    pointer_format = "video"
+    use_merge = False
+    input_images_dir = ""
+    input_video_path = "data/demo_data/robofac_demo.mp4"
+    pointer_data_path = f"./data/demo_data/robofac_demo.pt"
+
     # query = "Describe this image."
-    query = "Describe this scene, with explanation of the spatial layout of the room."
+    query = "What is the task? Did the robot succeeded to do the task? If failed, analyze the reason."
     model_path="Qwen/Qwen3-VL-4B-Instruct"
     use_viser = True
     model, processor, min_pixels, max_pixels, point3r_model = load_models(
         model_path=model_path, pointer_format=pointer_format, use_merge=use_merge
     )
     with torch.inference_mode():
-        preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
+        if input_images_dir:
+            preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
                         input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None, 
                         image_extensions = ("*.jpg",))
+        else:
+            preprocess_video(model, processor, min_pixels, max_pixels, point3r_model,
+                        input_video_path, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None)
     run_models(model, processor, pointer_data_path, query)

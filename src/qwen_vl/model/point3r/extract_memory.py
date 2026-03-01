@@ -205,11 +205,12 @@ def visualize_point3r_viser(
         gui_framerate = server.gui.add_slider("FPS", min=0.5, max=100, step=0.5, initial_value=1)
         gui_accumulative = server.gui.add_checkbox("Accumulative Mode", True)
         gui_stride = server.gui.add_slider("Stride", min=1, max=max(num_frames, 1), step=1, initial_value=1)
+        gui_num_frames_visible = server.gui.add_slider("Num Frames Visible", min=1, max=max(num_frames, 1), step=1, initial_value=max(num_frames, 1))
 
     with server.gui.add_folder("Visualization"):
         gui_color_mode = server.gui.add_dropdown("Color Mode", options=["Original RGB", "Timestamp (viridis)"], initial_value="Original RGB")
         gui_show_frustums = server.gui.add_checkbox("Show Frustums", True)
-        gui_point_size = server.gui.add_slider("Point Size", min=0.0005, max=0.01, step=0.0005, initial_value=0.001)
+        gui_point_size = server.gui.add_slider("Point Size", min=0.0001, max=0.03, step=0.0005, initial_value=0.005)
         gui_frustum_scale = server.gui.add_slider("Frustum Scale", min=0.01, max=0.2, step=0.01, initial_value=0.05)
 
     # Create parent frame for all timesteps
@@ -369,10 +370,14 @@ def visualize_point3r_viser(
         """Update frame visibility based on current mode and timestep."""
         current = gui_timestep.value
         stride = gui_stride.value
+        max_visible = gui_num_frames_visible.value
         with server.atomic():
             for i, frame_node in enumerate(frame_nodes):
                 if gui_accumulative.value:
-                    frame_node.visible = (i <= current) and (i % stride == 0)
+                    in_range = (i <= current) and (i % stride == 0)
+                    if gui_playing.value:
+                        in_range = in_range and (i > current - max_visible * stride)
+                    frame_node.visible = in_range
                 else:
                     frame_node.visible = (i == current)
         server.flush()
@@ -406,11 +411,39 @@ def visualize_point3r_viser(
                 point_cloud_handles[idx]['timestamp'].visible = use_timestamp
         server.flush()
 
+    @gui_num_frames_visible.on_update
+    def _(_):
+        update_frame_visibility()
+
     @gui_show_frustums.on_update
     def _(_):
         with server.atomic():
             for frustum in frustum_handles:
                 frustum.visible = gui_show_frustums.value
+
+    @gui_point_size.on_update
+    def _(_):
+        use_timestamp = (gui_color_mode.value == "Timestamp (viridis)")
+        with server.atomic():
+            for idx in point_cloud_handles:
+                fd = per_frame_data[idx]
+                point_cloud_handles[idx]['rgb'] = server.scene.add_point_cloud(
+                    name=f"/frames/t{idx}/points_rgb",
+                    points=fd['pts_3d'],
+                    colors=fd['colors_rgb'],
+                    point_size=gui_point_size.value,
+                    point_shape="rounded",
+                    visible=not use_timestamp,
+                )
+                point_cloud_handles[idx]['timestamp'] = server.scene.add_point_cloud(
+                    name=f"/frames/t{idx}/points_timestamp",
+                    points=fd['pts_3d'],
+                    colors=fd['colors_timestamp'],
+                    point_size=gui_point_size.value,
+                    point_shape="rounded",
+                    visible=use_timestamp,
+                )
+        server.flush()
 
     # Initialize visibility
     update_frame_visibility()
