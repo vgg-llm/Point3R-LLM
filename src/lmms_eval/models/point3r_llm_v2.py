@@ -616,7 +616,7 @@ class Point3RLLMv2(lmms):
                 )
             else:
                 # Standard image processing (fallback when pointer memory is disabled)
-                image_inputs, video_inputs = process_vision_info(messages)
+                image_inputs, video_inputs = process_vision_info(messages, image_patch_size=16)
                 inputs = self.processor(
                     text=text,
                     images=image_inputs,

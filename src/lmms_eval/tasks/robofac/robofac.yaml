@@ -1,0 +1,27 @@
+dataset_path: data/robofac
+dataset_kwargs:
+  token: True
+task: robofac
+test_split: test
+output_type: generate_until
+doc_to_visual: !function utils.robofac_doc_to_visual
+doc_to_text: !function utils.robofac_doc_to_text
+doc_to_target: "ground_truth"
+generation_kwargs:
+  max_new_tokens: 256
+  temperature: 0
+  top_p: 1.0
+  num_beams: 1
+  do_sample: false
+process_results: !function utils.robofac_process_results
+metric_list:
+  - metric: robofac_score
+    aggregation: !function utils.robofac_aggregate_results
+    higher_is_better: true
+lmms_eval_specific_kwargs:
+  default:
+    pre_prompt: "These are frames of a video showing a robotic arm performing a task."
+    choice_post_prompt: ""
+    open_post_prompt: ""
+metadata:
+  version: 0.0

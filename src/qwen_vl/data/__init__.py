@@ -129,6 +129,18 @@ VSIBENCH_BALANCED_POINT3R = {
     "tag": "3d"
 }
 
+ROBOFAC = {
+    "annotation_path": "data/media/robofac/training_qa.json",
+    "data_path": "data/media/robofac/simulation_data",
+    "tag": "2d"
+}
+
+ROBOFAC_POINT3R = {
+    "annotation_path": "data/train/robofac_training_qa_point3r.json",
+    "data_path": "data/media",
+    "tag": "2d"
+}
+
 data_dict = {
     "cambrian_737k": CAMBRIAN_737K,
     "mp_doc": MP_DOC,
@@ -152,6 +164,8 @@ data_dict = {
     "vstibench_point3r": VSTIBENCH_POINT3R,
     "spar_subset_point3r": SPAR_SUBSET_POINT3R,
     "vsibench_balanced_point3r": VSIBENCH_BALANCED_POINT3R,
+    "robofac": ROBOFAC,
+    "robofac_point3r": ROBOFAC_POINT3R,
 }
 
 

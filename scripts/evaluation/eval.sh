@@ -45,6 +45,10 @@ POINTER_DIR_NAME="${POINTER_DIR_NAME:-}"
 ADD_FRAME_ID="${ADD_FRAME_ID:-}"
 USE_POINTER_POSITION_ENCODING="${USE_POINTER_POSITION_ENCODING:-}"
 
+# --- Image / Video Resolution (optional) ---
+MAX_PIXELS="${MAX_PIXELS:-}"
+MIN_PIXELS="${MIN_PIXELS:-}"
+
 # --- Extra model args passthrough ---
 EXTRA_MODEL_ARGS="${EXTRA_MODEL_ARGS:-}"
 
@@ -87,6 +91,8 @@ model_args_str="${model_args_str},memory_fusion_method=${MEMORY_FUSION_METHOD}"
 [[ -n "$POINTER_DIR_NAME" ]]              && model_args_str="${model_args_str},pointer_dir_name=${POINTER_DIR_NAME}"
 [[ -n "$ADD_FRAME_ID" ]]                  && model_args_str="${model_args_str},add_frame_id=${ADD_FRAME_ID}"
 [[ -n "$USE_POINTER_POSITION_ENCODING" ]] && model_args_str="${model_args_str},use_pointer_position_encoding=${USE_POINTER_POSITION_ENCODING}"
+[[ -n "$MAX_PIXELS" ]]                   && model_args_str="${model_args_str},max_pixels=${MAX_PIXELS}"
+[[ -n "$MIN_PIXELS" ]]                   && model_args_str="${model_args_str},min_pixels=${MIN_PIXELS}"
 
 # --- Handle scanrefer special case ---
 if [[ "$BENCHMARKS" == *"scanrefer"* ]]; then
@@ -131,6 +137,8 @@ export POINTER_FORMAT="${POINTER_FORMAT}"
 export POINTER_DIR_NAME="${POINTER_DIR_NAME}"
 export ADD_FRAME_ID="${ADD_FRAME_ID}"
 export USE_POINTER_POSITION_ENCODING="${USE_POINTER_POSITION_ENCODING}"
+export MAX_PIXELS="${MAX_PIXELS}"
+export MIN_PIXELS="${MIN_PIXELS}"
 export EXTRA_MODEL_ARGS="${EXTRA_MODEL_ARGS}"
 
 bash scripts/evaluation/eval.sh
@@ -168,6 +176,7 @@ else
         --log_samples \
         --output_path "$OUTPUT_PATH" \
         ${EVAL_LIMIT:+--limit "$EVAL_LIMIT"} \
+        --verbosity=DEBUG \
         2>&1 | tee "${OUTPUT_PATH}/eval.log"
     echo "============================================="
     echo "Evaluation completed!"

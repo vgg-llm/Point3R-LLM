@@ -53,6 +53,15 @@ POINTER_DIR_NAME="${POINTER_DIR_NAME:-}"
 # --- Frame ID labels for pointer tokens (optional) ---
 ADD_FRAME_ID="${ADD_FRAME_ID:-}"
 
+# --- Image / Video Resolution & Sampling ---
+MAX_PIXELS="${MAX_PIXELS:-$((576*28*28))}"
+MIN_PIXELS="${MIN_PIXELS:-$((16*28*28))}"
+BASE_INTERVAL="${BASE_INTERVAL:-2}"
+VIDEO_MAX_FRAMES="${VIDEO_MAX_FRAMES:-8}"
+VIDEO_MIN_FRAMES="${VIDEO_MIN_FRAMES:-4}"
+VIDEO_MAX_FRAME_PIXELS="${VIDEO_MAX_FRAME_PIXELS:-$((1664*28*28))}"
+VIDEO_MIN_FRAME_PIXELS="${VIDEO_MIN_FRAME_PIXELS:-$((256*28*28))}"
+
 # --- Geometry Encoder (optional, for VGGT) ---
 USE_GEOMETRY_ENCODER="${USE_GEOMETRY_ENCODER:-False}"
 GEOMETRY_ENCODER_TYPE="${GEOMETRY_ENCODER_TYPE:-}"
@@ -131,6 +140,13 @@ export TUNE_POINTER_POSITION_ENCODER="${TUNE_POINTER_POSITION_ENCODER}"
 export POINTER_FORMAT="${POINTER_FORMAT}"
 export POINTER_DIR_NAME="${POINTER_DIR_NAME}"
 export ADD_FRAME_ID="${ADD_FRAME_ID}"
+export MAX_PIXELS="${MAX_PIXELS}"
+export MIN_PIXELS="${MIN_PIXELS}"
+export BASE_INTERVAL="${BASE_INTERVAL}"
+export VIDEO_MAX_FRAMES="${VIDEO_MAX_FRAMES}"
+export VIDEO_MIN_FRAMES="${VIDEO_MIN_FRAMES}"
+export VIDEO_MAX_FRAME_PIXELS="${VIDEO_MAX_FRAME_PIXELS}"
+export VIDEO_MIN_FRAME_PIXELS="${VIDEO_MIN_FRAME_PIXELS}"
 export USE_GEOMETRY_ENCODER="${USE_GEOMETRY_ENCODER}"
 export GEOMETRY_ENCODER_TYPE="${GEOMETRY_ENCODER_TYPE}"
 export GEOMETRY_ENCODER_PATH="${GEOMETRY_ENCODER_PATH}"
@@ -178,13 +194,13 @@ CMD=(
     --optim adamw_torch
     --model_max_length "$MODEL_MAX_LENGTH"
     --data_flatten False
-    --max_pixels $((576*28*28))
-    --min_pixels $((16*28*28))
-    --base_interval 2
-    --video_max_frames 8
-    --video_min_frames 4
-    --video_max_frame_pixels $((1664*28*28))
-    --video_min_frame_pixels $((256*28*28))
+    --max_pixels "$MAX_PIXELS"
+    --min_pixels "$MIN_PIXELS"
+    --base_interval "$BASE_INTERVAL"
+    --video_max_frames "$VIDEO_MAX_FRAMES"
+    --video_min_frames "$VIDEO_MIN_FRAMES"
+    --video_max_frame_pixels "$VIDEO_MAX_FRAME_PIXELS"
+    --video_min_frame_pixels "$VIDEO_MIN_FRAME_PIXELS"
     --num_train_epochs "$NUM_TRAIN_EPOCHS"
     --warmup_ratio 0.03
     --lr_scheduler_type cosine
@@ -217,6 +233,7 @@ CMD=(
 [[ -n "$POINTER_FORMAT" ]]                && CMD+=(--pointer_format "$POINTER_FORMAT")
 [[ -n "$POINTER_DIR_NAME" ]]             && CMD+=(--pointer_dir_name "$POINTER_DIR_NAME")
 [[ -n "$ADD_FRAME_ID" ]]                 && CMD+=(--add_frame_id "$ADD_FRAME_ID")
+[[ -n "$VIDEO_FPS" ]]                    && CMD+=(--video_fps "$VIDEO_FPS")
 [[ -n "$GEOMETRY_ENCODER_TYPE" ]]         && CMD+=(--geometry_encoder_type "$GEOMETRY_ENCODER_TYPE")
 [[ -n "$GEOMETRY_ENCODER_PATH" ]]         && CMD+=(--geometry_encoder_path "$GEOMETRY_ENCODER_PATH")
 [[ -n "$FEATURE_FUSION_METHOD" ]]         && CMD+=(--feature_fusion_method "$FEATURE_FUSION_METHOD")
