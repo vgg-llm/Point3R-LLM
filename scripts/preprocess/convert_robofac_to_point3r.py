@@ -64,17 +64,22 @@ def convert_training_annotation(annotation, pointer_dir):
 
 def convert_eval_entry(entry, pointer_dir):
     """
-    Add pointer_data field to a flattened eval entry.
+    Add pointer_data field and prepend <|pointer_pad|> to question in a flattened eval entry.
 
-    Original: {"video_path": "simulation_data/TaskName/.../uuid.mp4", ...}
-    Added:    {"pointer_data": "robofac/{pointer_dir}/simulation_data/TaskName/.../uuid.pt", ...}
+    Original: {"video_path": "simulation_data/TaskName/.../uuid.mp4", "question": "...", ...}
+    Added:    {"pointer_data": "robofac/{pointer_dir}/simulation_data/TaskName/.../uuid.pt",
+               "question": "<|pointer_pad|> ...", ...}
     """
+    pointer_token = "<|pointer_pad|>"
     new_entry = entry.copy()
     video_path = entry["video_path"]
 
     # Build pointer_data path: robofac/{pointer_dir}/{video_path}.pt
     pointer_data_path = f"robofac/{pointer_dir}/{Path(video_path).with_suffix('.pt')}"
     new_entry["pointer_data"] = pointer_data_path
+
+    # Prepend pointer token to question
+    new_entry["question"] = f"{pointer_token} {entry['question']}"
 
     return new_entry
 
