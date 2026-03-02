@@ -67,6 +67,20 @@ FORMAT_HINTS = {
     "Task identification": " (Your answer should be a brief phrase that describes the task in the video.)",
 }
 
+# Experiment-type partitioning (per RoboFAC paper)
+EXPERIMENT_TYPES = {
+    "Short-horizon": ["PickCube", "PullCube", "PushCube", "StackCube", "LiftPegUpright"],
+    "Medium-horizon": ["PlugCharger", "PegInsertionSide", "UprightStack", "PullCubeTool",
+                        "InsertCylinder", "PlaceCube", "ToolsTask"],
+    "Long-horizon": ["SafeTask", "MicrowaveTask"],
+    "Dynamic": ["SpinStack", "SpinPullStack"],
+}
+TASK_TO_EXPERIMENT_TYPE = {
+    task: exp_type
+    for exp_type, tasks in EXPERIMENT_TYPES.items()
+    for task in tasks
+}
+
 MEDIA_BASE_DIR = "data/media/robofac"
 
 
@@ -358,34 +372,53 @@ def _score_open_ended_with_llm(open_ended_results):
             doc["llm_score"] = 0.0
 
 
-def robofac_aggregate_results(results):
-    """Aggregate results across all documents with two scoring approaches."""
-    results_df = pd.DataFrame(results)
+def _get_experiment_type(row):
+    """Determine experiment type from data_source and task name."""
+    if row.get("data_source") == "realworld":
+        return "Real-world"
+    task = row.get("task", "")
+    return TASK_TO_EXPERIMENT_TYPE.get(task, "Unknown")
 
-    output = {}
 
-    # === Choice-based questions: string matching ===
+def _score_choice_subset(df):
+    """Score choice-based questions in a DataFrame subset. Returns dict of qt -> accuracy (0-100)."""
+    scores = {}
     for qt in CHOICE_QUESTION_TYPES:
-        qt_mask = results_df["question_type"] == qt
+        qt_mask = df["question_type"] == qt
         if not qt_mask.any():
             continue
-        qt_docs = results_df[qt_mask]
-
+        qt_docs = df[qt_mask]
         correct = 0
         total = 0
         for _, doc in qt_docs.iterrows():
             pred = doc["prediction"].strip().lower()
             target = doc["ground_truth"].strip().lower()
-            # Matching original RoboFAC logic: pred in ref
             if pred in target:
                 correct += 1
             total += 1
+        scores[qt] = (correct / total * 100) if total > 0 else 0.0
+    return scores
 
-        acc = correct / total if total > 0 else 0.0
-        output[f"{qt}_accuracy"] = acc
-        eval_logger.info(f"  {qt}: {acc * 100:.1f}% ({correct}/{total})")
 
-    # === Open-ended questions: GPT-4O scoring ===
+def _score_open_ended_subset(docs_list):
+    """Score open-ended questions in a list of doc dicts. Returns dict of qt -> score (0-100)."""
+    from collections import defaultdict
+    qt_scores = defaultdict(list)
+    for doc in docs_list:
+        qt_scores[doc["question_type"]].append(doc["llm_score"])
+    return {qt: sum(s) / len(s) for qt, s in qt_scores.items()}
+
+
+def robofac_aggregate_results(results):
+    """Aggregate results with experiment-type partitioning (per RoboFAC paper)."""
+    results_df = pd.DataFrame(results)
+
+    # Assign experiment type to each row
+    results_df["experiment_type"] = results_df.apply(_get_experiment_type, axis=1)
+
+    output = {}
+
+    # === Score all open-ended questions first (single LLM batch) ===
     open_ended_docs = []
     for _, row in results_df.iterrows():
         if row["question_type"] in OPEN_ENDED_QUESTION_TYPES:
@@ -393,32 +426,81 @@ def robofac_aggregate_results(results):
 
     if open_ended_docs:
         _score_open_ended_with_llm(open_ended_docs)
+        # Write llm_score back into results_df
+        oe_idx = 0
+        for i, row in results_df.iterrows():
+            if row["question_type"] in OPEN_ENDED_QUESTION_TYPES:
+                results_df.at[i, "llm_score"] = open_ended_docs[oe_idx]["llm_score"]
+                oe_idx += 1
 
-        # Aggregate per question type
+    # === Per-experiment-type scoring ===
+    exp_type_order = ["Short-horizon", "Medium-horizon", "Long-horizon", "Dynamic", "Real-world"]
+    exp_type_scores = {}  # exp_type -> (score, sample_count)
+
+    for exp_type in exp_type_order:
+        exp_mask = results_df["experiment_type"] == exp_type
+        if not exp_mask.any():
+            continue
+        exp_df = results_df[exp_mask]
+        n_samples = len(exp_df)
+
+        # Choice-based scores
+        choice_scores = _score_choice_subset(exp_df)
+
+        # Open-ended scores
+        oe_docs = [row.to_dict() for _, row in exp_df.iterrows()
+                    if row["question_type"] in OPEN_ENDED_QUESTION_TYPES and "llm_score" in row]
+        open_scores = _score_open_ended_subset(oe_docs) if oe_docs else {}
+
+        # Combine all question-type scores for this experiment type
+        qt_scores = []
+        for qt in CHOICE_QUESTION_TYPES:
+            if qt in choice_scores:
+                qt_scores.append(choice_scores[qt])
+                output[f"{exp_type}/{qt}_accuracy"] = choice_scores[qt]
+        for qt in OPEN_ENDED_QUESTION_TYPES:
+            if qt in open_scores:
+                qt_scores.append(open_scores[qt])
+                output[f"{exp_type}/{qt}_score"] = open_scores[qt]
+
+        exp_avg = sum(qt_scores) / len(qt_scores) if qt_scores else 0.0
+        output[f"{exp_type}_score"] = exp_avg
+        exp_type_scores[exp_type] = (exp_avg, n_samples)
+
+        eval_logger.info(f"  {exp_type}: {exp_avg:.1f}/100 ({n_samples} samples)")
+        for qt in CHOICE_QUESTION_TYPES:
+            if qt in choice_scores:
+                eval_logger.info(f"    {qt}: {choice_scores[qt]:.1f}%")
+        for qt in OPEN_ENDED_QUESTION_TYPES:
+            if qt in open_scores:
+                eval_logger.info(f"    {qt}: {open_scores[qt]:.1f}/100")
+
+    # === Global per-question-type scores (for backward compat) ===
+    global_choice = _score_choice_subset(results_df)
+    for qt, score in global_choice.items():
+        output[f"{qt}_accuracy"] = score
+
+    if open_ended_docs:
         from collections import defaultdict
-        qt_scores = defaultdict(list)
+        qt_scores_global = defaultdict(list)
         for doc in open_ended_docs:
-            qt_scores[doc["question_type"]].append(doc["llm_score"])
+            qt_scores_global[doc["question_type"]].append(doc["llm_score"])
+        for qt, scores in qt_scores_global.items():
+            output[f"{qt}_score"] = sum(scores) / len(scores)
 
-        for qt, scores in qt_scores.items():
-            avg = sum(scores) / len(scores)
-            output[f"{qt}_score"] = avg
-            eval_logger.info(f"  {qt}: {avg:.1f}/100 ({len(scores)} samples)")
-
-    # === Overall score ===
-    # Choice-based: accuracy * 100 to match scale with open-ended (0-100)
-    all_scores = []
-    for qt in CHOICE_QUESTION_TYPES:
-        key = f"{qt}_accuracy"
-        if key in output:
-            all_scores.append(output[key] * 100)
-    for qt in OPEN_ENDED_QUESTION_TYPES:
-        key = f"{qt}_score"
-        if key in output:
-            all_scores.append(output[key])
-
-    overall = sum(all_scores) / len(all_scores) if all_scores else 0.0
+    # === Overall score (sample-weighted average across experiment types) ===
+    total_weight = sum(n for _, n in exp_type_scores.values())
+    if total_weight > 0:
+        overall = sum(score * n for score, n in exp_type_scores.values()) / total_weight
+    else:
+        overall = 0.0
     output["overall"] = overall
+
+    # Warn about unknown experiment types
+    unknown_mask = results_df["experiment_type"] == "Unknown"
+    if unknown_mask.any():
+        unknown_tasks = results_df[unknown_mask]["task"].unique().tolist()
+        eval_logger.warning(f"Unknown experiment type for tasks: {unknown_tasks}")
 
     eval_logger.info(f"RoboFAC Point3R Overall: {overall:.1f}/100")
     eval_logger.info(f"RoboFAC Point3R Full results: {output}")
