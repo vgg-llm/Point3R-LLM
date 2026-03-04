@@ -261,28 +261,27 @@ def _call_llm_batch_local(prompts, model_path):
     """Call a local transformers model for scoring."""
     from transformers import AutoTokenizer
 
-    model_path = _resolve_model_path(model_path)
-    eval_logger.info(f"Loading local model from {model_path}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    # Auto-detect cache_dir for HF model IDs cached under ./cache/
+    cache_dir = None
+    if "/" in model_path and not Path(model_path).exists():
+        local_cache = Path("./cache")
+        cache_model_dir = local_cache / f"models--{model_path.replace('/', '--')}"
+        if cache_model_dir.exists():
+            cache_dir = str(local_cache)
+            eval_logger.info(f"Found model in local cache: {cache_dir}")
 
-    # Try CausalLM first, fall back to Vision2Seq for VL models
-    try:
-        from transformers import AutoModelForCausalLM
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-        )
-    except (ValueError, KeyError):
-        from transformers import AutoModelForVision2Seq
-        eval_logger.info("CausalLM loading failed, trying Vision2Seq (VL model)...")
-        model = AutoModelForVision2Seq.from_pretrained(
-            model_path,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-        )
+    load_path = model_path if cache_dir else _resolve_model_path(model_path)
+    eval_logger.info(f"Loading local model from {load_path} (cache_dir={cache_dir})...")
+    tokenizer = AutoTokenizer.from_pretrained(load_path, trust_remote_code=True, cache_dir=cache_dir)
+
+    from transformers import Qwen3VLForConditionalGeneration
+    model = Qwen3VLForConditionalGeneration.from_pretrained(
+        load_path,
+        cache_dir="./cache",
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        low_cpu_mem_usage=True,
+    )
     model.eval()
 
     results = []
@@ -320,6 +319,11 @@ def _call_llm_batch_local(prompts, model_path):
 
 def _score_open_ended_with_llm(open_ended_results):
     """Score open-ended questions using LLM (API or local)."""
+    # Skip if all docs already have llm_score (e.g., from multi-GPU pre-scoring)
+    if all("llm_score" in doc for doc in open_ended_results):
+        eval_logger.info("All open-ended docs already have llm_score, skipping LLM scoring")
+        return
+
     api_key = os.environ.get("OPENAI_API_KEY", "")
     model_name = os.environ.get("ROBOFAC_LLM_MODEL", "gpt-4o")
     base_url = os.environ.get("ROBOFAC_LLM_URL", "https://api.openai.com/v1")
