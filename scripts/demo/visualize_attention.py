@@ -38,8 +38,13 @@ def run_models_with_attention(
     query="Describe this scene.",
     pointer_data=None,
     max_new_tokens=128,
+    layer_indices=None,
 ):
     """Run model inference and capture attention weights.
+
+    Args:
+        layer_indices: Optional list of layer indices for attention aggregation.
+                       If None, averages all layers (default behavior).
 
     Returns:
         dict with keys: generated_text, attention_matrix, pointer_timestamps,
@@ -100,6 +105,9 @@ def run_models_with_attention(
     print(f"Input length: {input_len}")
     print(f"Pointer tokens: {len(pointer_indices)}")
     print(f"Generating up to {max_new_tokens} tokens...")
+    print(pointer_indices[:10], pointer_indices[-10:],)
+    input_decoded = processor.tokenizer.decode(input_ids, skip_special_tokens=False)
+    print(input_decoded)
 
     # Generate with attention output
     with torch.inference_mode():
@@ -118,7 +126,7 @@ def run_models_with_attention(
     # Decode generated text
     generated_ids = outputs.sequences[0][input_len:]
     generated_text = processor.batch_decode(
-        [generated_ids], skip_special_tokens=True, clean_up_tokenization_spaces=False
+        [generated_ids], skip_special_tokens=False, clean_up_tokenization_spaces=False
     )[0]
     generated_tokens_text = [
         processor.tokenizer.decode([tid], skip_special_tokens=False) for tid in generated_ids
@@ -128,7 +136,7 @@ def run_models_with_attention(
 
     # Extract pointer attention matrix
     print("Extracting pointer attention...")
-    attention_matrix = extract_pointer_attention(outputs, pointer_indices, input_len)
+    attention_matrix = extract_pointer_attention(outputs, pointer_indices, input_len, layer_indices=layer_indices)
 
     stage_end = time()
     print(f"Generation + attention extraction: {stage_end - stage_start:.2f}s")
@@ -303,6 +311,8 @@ def main():
     parser.add_argument("--use_merge", action="store_true", default=True)
     parser.add_argument("--top_k", type=int, default=16,
                         help="Number of top tokens to show in per-token grid view")
+    parser.add_argument("--layer_indices", type=int, nargs="+", default=None,
+                        help="Layer indices for attention aggregation (e.g. -8 -7 ... -1). Default: all layers.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -333,6 +343,7 @@ def main():
         pointer_data_path=args.pointer_data_path,
         query=args.query,
         max_new_tokens=args.max_new_tokens,
+        layer_indices=args.layer_indices,
     )
 
     # Generate visualizations

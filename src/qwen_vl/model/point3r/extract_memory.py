@@ -86,6 +86,7 @@ def visualize_point3r_viser(
     annotation_result=None,
     scannet_pth_path=None,
     scannet_pose_paths=None,
+    attention_data=None,
 ):
     """
     Launch an interactive viser 3D visualization of Point3R outputs.
@@ -97,6 +98,11 @@ def visualize_point3r_viser(
         annotation_result: Output from extract_box_and_coordinates_from_scan2cap for visualization.
         scannet_pth_path: Path to ScanNet .pth file for GT point cloud visualization.
         scannet_pose_paths: List of paths to ScanNet pose .txt files with camera poses.
+        attention_data: Optional dict with attention visualization data containing:
+            - "attention_matrix": Tensor (num_gen_tokens, num_pointers)
+            - "generated_tokens_text": list[str]
+            - "pointer_positions": np.ndarray (num_pointers, 3)
+            - "pointer_timestamps": np.ndarray (num_pointers,)
     """
     import viser
     import viser.transforms as tf
@@ -175,6 +181,14 @@ def visualize_point3r_viser(
     for idx, (pred, view) in enumerate(zip(outputs['pred'], outputs['views'])):
         pts_3d = get_pred_pts3d(None, pred, use_pose=True)
 
+        # Extract confidence (per-pixel) — use cross-view conf, fall back to conf_self
+        if 'conf' in pred:
+            conf = pred['conf'].detach().cpu().numpy().reshape(-1)
+        elif 'conf_self' in pred:
+            conf = pred['conf_self'].detach().cpu().numpy().reshape(-1)
+        else:
+            conf = None
+
         # Original RGB image for frustum display (H, W, 3)
         rgb_image = view['img'].permute(0, 2, 3, 1).squeeze(0)
         rgb_image_np = (rgb_image.detach().cpu().numpy() * 255).astype(np.uint8)
@@ -193,8 +207,42 @@ def visualize_point3r_viser(
             'colors_rgb': color_rgb,
             'colors_timestamp': color_timestamp,
             'rgb_image': rgb_image_np,
+            'confidence': conf,
             'frame_idx': idx,
         })
+
+    # === Pre-compute attention assignment (if attention_data provided) ===
+    attn_assignments = None
+    attn_threshold = None
+    attn_initial_colors = None
+    attn_initial_masks = None
+    if attention_data is not None:
+        import sys
+        sys.path.insert(0, 'scripts/demo')
+        from attention_utils import (
+            precompute_dense_point_assignment,
+            compute_attention_colors_from_assignment,
+            aggregate_attention_across_tokens,
+        )
+
+        attn_ptr_pos = attention_data['pointer_positions']
+        attn_ptr_ts = attention_data['pointer_timestamps']
+        per_frame_pts3d_list = [fd['pts_3d'] for fd in per_frame_data]
+
+        print("Pre-computing attention assignment (KD-tree per frame)...")
+        attn_assignments, attn_threshold = precompute_dense_point_assignment(
+            per_frame_pts3d_list, attn_ptr_pos, attn_ptr_ts
+        )
+        print(f"  Threshold: {attn_threshold:.4f}")
+
+        # Compute initial attention colors (aggregated mean)
+        init_weights = aggregate_attention_across_tokens(
+            attention_data['attention_matrix'], mode="mean"
+        ).numpy()
+        attn_initial_colors, attn_initial_masks = compute_attention_colors_from_assignment(
+            attn_assignments, attn_threshold, init_weights, per_frame_pts3d_list
+        )
+        print("  Initial attention colors computed.")
 
     # === GUI Controls ===
     with server.gui.add_folder("Playback"):
@@ -207,11 +255,74 @@ def visualize_point3r_viser(
         gui_stride = server.gui.add_slider("Stride", min=1, max=max(num_frames, 1), step=1, initial_value=1)
         gui_num_frames_visible = server.gui.add_slider("Num Frames Visible", min=1, max=max(num_frames, 1), step=1, initial_value=max(num_frames, 1))
 
+    color_mode_options = ["Original RGB", "Timestamp (viridis)"]
+    if attention_data is not None:
+        color_mode_options.append("Attention Heatmap")
+
+    # Compute confidence stats for slider range
+    has_confidence = any(fd['confidence'] is not None for fd in per_frame_data)
+    if has_confidence:
+        all_conf = np.concatenate([fd['confidence'] for fd in per_frame_data if fd['confidence'] is not None])
+        conf_min, conf_max = float(all_conf.min()), float(all_conf.max())
+        conf_median = float(np.median(all_conf))
+        print(f"  Confidence range: [{conf_min:.2f}, {conf_max:.2f}], median: {conf_median:.2f}")
+    else:
+        conf_min, conf_max, conf_median = 0.0, 1.0, 0.5
+
     with server.gui.add_folder("Visualization"):
-        gui_color_mode = server.gui.add_dropdown("Color Mode", options=["Original RGB", "Timestamp (viridis)"], initial_value="Original RGB")
+        gui_color_mode = server.gui.add_dropdown("Color Mode", options=color_mode_options, initial_value="Original RGB")
         gui_show_frustums = server.gui.add_checkbox("Show Frustums", True)
         gui_point_size = server.gui.add_slider("Point Size", min=0.0001, max=0.03, step=0.0005, initial_value=0.005)
         gui_frustum_scale = server.gui.add_slider("Frustum Scale", min=0.01, max=0.2, step=0.01, initial_value=0.05)
+        if has_confidence:
+            gui_conf_threshold = server.gui.add_slider(
+                "Confidence Threshold", min=conf_min, max=conf_max,
+                step=(conf_max - conf_min) / 100.0, initial_value=conf_min
+            )
+        else:
+            gui_conf_threshold = None
+
+    # Attention-specific GUI controls
+    gui_attn_token_slider = None
+    gui_attn_token_label = None
+    gui_attn_aggregation = None
+    gui_attn_hide_unassigned = None
+    gui_attn_gamma = None
+    if attention_data is not None:
+        num_gen_tokens = attention_data['attention_matrix'].shape[0]
+        with server.gui.add_folder("Attention Controls"):
+            gui_attn_token_slider = server.gui.add_slider(
+                "Generated Token", min=0, max=num_gen_tokens,
+                step=1, initial_value=0,
+            )
+            gui_attn_token_label = server.gui.add_text(
+                "Token Text", initial_value="[Aggregated Mean]", disabled=True
+            )
+            gui_attn_aggregation = server.gui.add_dropdown(
+                "Aggregation Mode", options=["mean", "max", "sum"], initial_value="mean"
+            )
+            gui_attn_hide_unassigned = server.gui.add_checkbox(
+                "Hide Unassigned Points", initial_value=False
+            )
+            gui_attn_gamma = server.gui.add_slider(
+                "Gamma", min=0.1, max=2.0, step=0.1, initial_value=0.2
+            )
+
+    def get_conf_mask(frame_data):
+        """Return boolean mask for points passing the confidence threshold."""
+        conf = frame_data['confidence']
+        if conf is None or gui_conf_threshold is None:
+            return None
+        return conf >= gui_conf_threshold.value
+
+    def apply_mask(pts, colors, mask):
+        """Apply confidence mask, returning at least 1 point for viser."""
+        if mask is None:
+            return pts, colors
+        p, c = pts[mask], colors[mask]
+        if len(p) == 0:
+            return np.zeros((1, 3), dtype=np.float32), np.zeros((1, 3), dtype=np.uint8)
+        return p, c
 
     # Create parent frame for all timesteps
     server.scene.add_frame("/frames", show_axes=False, wxyz=align_wxyz, position=align_pos)
@@ -227,11 +338,15 @@ def visualize_point3r_viser(
         frame_node = server.scene.add_frame(f"/frames/t{idx}", show_axes=False)
         frame_nodes.append(frame_node)
 
+        conf_mask = get_conf_mask(frame_data)
+        pts_masked, rgb_masked = apply_mask(frame_data['pts_3d'], frame_data['colors_rgb'], conf_mask)
+        _, ts_masked = apply_mask(frame_data['pts_3d'], frame_data['colors_timestamp'], conf_mask)
+
         # Point cloud with RGB colors
         pc_rgb = server.scene.add_point_cloud(
             name=f"/frames/t{idx}/points_rgb",
-            points=frame_data['pts_3d'],
-            colors=frame_data['colors_rgb'],
+            points=pts_masked,
+            colors=rgb_masked,
             point_size=gui_point_size.value,
             point_shape="rounded",
             visible=True,
@@ -240,14 +355,29 @@ def visualize_point3r_viser(
         # Point cloud with timestamp colors (initially hidden)
         pc_timestamp = server.scene.add_point_cloud(
             name=f"/frames/t{idx}/points_timestamp",
-            points=frame_data['pts_3d'],
-            colors=frame_data['colors_timestamp'],
+            points=pts_masked,
+            colors=ts_masked,
             point_size=gui_point_size.value,
             point_shape="rounded",
             visible=False,
         )
 
-        point_cloud_handles[idx] = {'rgb': pc_rgb, 'timestamp': pc_timestamp}
+        handles = {'rgb': pc_rgb, 'timestamp': pc_timestamp}
+
+        # Attention heatmap point cloud (initially hidden)
+        if attn_initial_colors is not None:
+            _, attn_masked = apply_mask(frame_data['pts_3d'], attn_initial_colors[idx], conf_mask)
+            pc_attention = server.scene.add_point_cloud(
+                name=f"/frames/t{idx}/points_attention",
+                points=pts_masked,
+                colors=attn_masked,
+                point_size=gui_point_size.value,
+                point_shape="rounded",
+                visible=False,
+            )
+            handles['attention'] = pc_attention
+
+        point_cloud_handles[idx] = handles
 
         # Camera frustum with RGB image and viridis-colored edge
         if camera_poses is not None:
@@ -404,11 +534,13 @@ def visualize_point3r_viser(
 
     @gui_color_mode.on_update
     def _(_):
-        use_timestamp = (gui_color_mode.value == "Timestamp (viridis)")
+        mode = gui_color_mode.value
         with server.atomic():
             for idx in point_cloud_handles:
-                point_cloud_handles[idx]['rgb'].visible = not use_timestamp
-                point_cloud_handles[idx]['timestamp'].visible = use_timestamp
+                point_cloud_handles[idx]['rgb'].visible = (mode == "Original RGB")
+                point_cloud_handles[idx]['timestamp'].visible = (mode == "Timestamp (viridis)")
+                if 'attention' in point_cloud_handles[idx]:
+                    point_cloud_handles[idx]['attention'].visible = (mode == "Attention Heatmap")
         server.flush()
 
     @gui_num_frames_visible.on_update
@@ -421,29 +553,135 @@ def visualize_point3r_viser(
             for frustum in frustum_handles:
                 frustum.visible = gui_show_frustums.value
 
-    @gui_point_size.on_update
-    def _(_):
-        use_timestamp = (gui_color_mode.value == "Timestamp (viridis)")
+    def rebuild_point_clouds():
+        """Rebuild all point clouds (called on point size or confidence threshold change)."""
+        mode = gui_color_mode.value
         with server.atomic():
             for idx in point_cloud_handles:
                 fd = per_frame_data[idx]
+                conf_mask = get_conf_mask(fd)
+                pts_m, rgb_m = apply_mask(fd['pts_3d'], fd['colors_rgb'], conf_mask)
+                _, ts_m = apply_mask(fd['pts_3d'], fd['colors_timestamp'], conf_mask)
+
                 point_cloud_handles[idx]['rgb'] = server.scene.add_point_cloud(
                     name=f"/frames/t{idx}/points_rgb",
-                    points=fd['pts_3d'],
-                    colors=fd['colors_rgb'],
+                    points=pts_m,
+                    colors=rgb_m,
                     point_size=gui_point_size.value,
                     point_shape="rounded",
-                    visible=not use_timestamp,
+                    visible=(mode == "Original RGB"),
                 )
                 point_cloud_handles[idx]['timestamp'] = server.scene.add_point_cloud(
                     name=f"/frames/t{idx}/points_timestamp",
-                    points=fd['pts_3d'],
-                    colors=fd['colors_timestamp'],
+                    points=pts_m,
+                    colors=ts_m,
                     point_size=gui_point_size.value,
                     point_shape="rounded",
-                    visible=use_timestamp,
+                    visible=(mode == "Timestamp (viridis)"),
                 )
+                if 'attention' in point_cloud_handles[idx]:
+                    cur_colors = _current_attn_colors[0]
+                    attn_c = cur_colors[idx] if cur_colors is not None else fd['colors_rgb']
+                    _, attn_m = apply_mask(fd['pts_3d'], attn_c, conf_mask)
+                    point_cloud_handles[idx]['attention'] = server.scene.add_point_cloud(
+                        name=f"/frames/t{idx}/points_attention",
+                        points=pts_m,
+                        colors=attn_m,
+                        point_size=gui_point_size.value,
+                        point_shape="rounded",
+                        visible=(mode == "Attention Heatmap"),
+                    )
         server.flush()
+
+    @gui_point_size.on_update
+    def _(_):
+        rebuild_point_clouds()
+
+    if gui_conf_threshold is not None:
+        @gui_conf_threshold.on_update
+        def _(_):
+            rebuild_point_clouds()
+
+    # === Attention recomputation handler ===
+    # We store the "current" attention colors in a mutable container so the
+    # point-size handler can reference them after recomputation.
+    _current_attn_colors = [attn_initial_colors]  # list-of-one for mutability
+
+    if attention_data is not None:
+        def recompute_attention_colors():
+            """Recompute attention point cloud colors based on GUI state."""
+            token_idx = gui_attn_token_slider.value
+            if token_idx == 0:
+                # Aggregated mode
+                attn_weights = aggregate_attention_across_tokens(
+                    attention_data['attention_matrix'],
+                    mode=gui_attn_aggregation.value,
+                ).numpy()
+                gui_attn_token_label.value = f"[Aggregated {gui_attn_aggregation.value}]"
+            else:
+                # Single token mode (slider 1 = token index 0)
+                actual_idx = token_idx - 1
+                attn_weights = attention_data['attention_matrix'][actual_idx].numpy()
+                token_text = attention_data['generated_tokens_text'][actual_idx]
+                gui_attn_token_label.value = f"[{actual_idx}] {token_text.strip() or repr(token_text)}"
+
+            gamma = gui_attn_gamma.value
+            hide = gui_attn_hide_unassigned.value
+            per_frame_pts3d_list = [fd['pts_3d'] for fd in per_frame_data]
+
+            colors, masks = compute_attention_colors_from_assignment(
+                attn_assignments, attn_threshold, attn_weights,
+                per_frame_pts3d_list, gamma=gamma, hide_unassigned=hide,
+            )
+            _current_attn_colors[0] = colors
+
+            is_attn_mode = (gui_color_mode.value == "Attention Heatmap")
+            with server.atomic():
+                for idx in point_cloud_handles:
+                    if 'attention' not in point_cloud_handles[idx]:
+                        continue
+                    fd = per_frame_data[idx]
+                    conf_mask = get_conf_mask(fd)
+                    # Combine confidence mask with hide-unassigned mask
+                    if hide:
+                        combined = masks[idx].copy()
+                        if conf_mask is not None:
+                            combined = combined & conf_mask
+                        vis_pts = fd['pts_3d'][combined]
+                        vis_colors = colors[idx][combined]
+                    else:
+                        vis_pts, vis_colors = apply_mask(fd['pts_3d'], colors[idx], conf_mask)
+
+                    if len(vis_pts) == 0:
+                        vis_pts = np.zeros((1, 3), dtype=np.float32)
+                        vis_colors = np.zeros((1, 3), dtype=np.uint8)
+
+                    point_cloud_handles[idx]['attention'] = server.scene.add_point_cloud(
+                        name=f"/frames/t{idx}/points_attention",
+                        points=vis_pts,
+                        colors=vis_colors,
+                        point_size=gui_point_size.value,
+                        point_shape="rounded",
+                        visible=is_attn_mode,
+                    )
+            server.flush()
+
+        @gui_attn_token_slider.on_update
+        def _(_):
+            recompute_attention_colors()
+
+        @gui_attn_aggregation.on_update
+        def _(_):
+            if gui_attn_token_slider.value == 0:
+                recompute_attention_colors()
+
+        @gui_attn_hide_unassigned.on_update
+        def _(_):
+            recompute_attention_colors()
+
+        @gui_attn_gamma.on_update
+        def _(_):
+            recompute_attention_colors()
 
     # Initialize visibility
     update_frame_visibility()
