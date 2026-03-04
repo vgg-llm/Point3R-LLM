@@ -2,7 +2,7 @@
 Prepare RoboFAC evaluation data for lmms_eval.
 
 Flattens the per-video split files from data/media/robofac/test_qa_sim/ and
-test_qa_realworld/ into a single data/robofac/test.json with one entry per QA pair.
+test_qa_realworld/ into a single data/evaluation/robofac/test.json with one entry per QA pair.
 
 Each entry includes a `data_source` field ("sim" or "realworld") for experiment-type
 partitioning during evaluation.
@@ -19,7 +19,7 @@ from collections import Counter
 BASE_DIR = "data/media/robofac"
 SIM_TEST_DIR = os.path.join(BASE_DIR, "test_qa_sim")
 REALWORLD_TEST_DIR = os.path.join(BASE_DIR, "test_qa_realworld")
-OUTPUT_DIR = "data/robofac"
+OUTPUT_DIR = "data/evaluation/robofac"
 
 
 def clean_question(text):
@@ -110,6 +110,9 @@ def process_splits(test_dir, video_base_dir, data_source, max_splits=40):
 
                     question = clean_question(human_msg["value"])
                     answer = assistant_msg["value"]
+                    # Some realworld annotations have list-of-strings answers; join them.
+                    if isinstance(answer, list):
+                        answer = "\n".join(answer)
 
                     options = None
                     if question_type in CHOICE_QUESTION_TYPES:
@@ -152,6 +155,20 @@ def main():
     output_path = os.path.join(OUTPUT_DIR, "test.json")
     with open(output_path, "w") as f:
         json.dump(all_entries, f, indent=2)
+
+    # Write HuggingFace-style dataset card
+    readme_path = os.path.join(OUTPUT_DIR, "README.md")
+    with open(readme_path, "w") as f:
+        f.write(
+            "---\n"
+            "license: apache-2.0\n"
+            "configs:\n"
+            "- config_name: default\n"
+            "  data_files:\n"
+            "  - split: test\n"
+            "    path: test.json\n"
+            "---\n"
+        )
 
     print(f"\nTotal entries: {len(all_entries)}")
     print(f"Output: {output_path}")

@@ -1,4 +1,4 @@
-dataset_path: data/robofac
+dataset_path: data/evaluation/robofac
 dataset_kwargs:
   token: True
 task: robofac

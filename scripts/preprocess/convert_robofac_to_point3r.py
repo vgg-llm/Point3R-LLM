@@ -9,7 +9,7 @@ Training data:
 
 Eval data:
   Adds pointer_data field to flattened test entries.
-  Input:  data/robofac/test.json
+  Input:  data/evaluation/robofac/test.json
   Output: data/evaluation/robofac_point3r/test.json
 
 Usage:
@@ -178,7 +178,7 @@ def main():
     parser.add_argument(
         "--eval-input",
         type=str,
-        default="data/robofac/test.json",
+        default="data/evaluation/robofac/test.json",
         help="Input eval data file",
     )
     parser.add_argument(
@@ -208,6 +208,20 @@ def main():
     if not args.skip_eval:
         if Path(args.eval_input).exists():
             convert_eval_data(args.eval_input, args.eval_output, args.pointer_dir)
+
+            # Write HuggingFace-style dataset card
+            readme_path = Path(args.eval_output).parent / "README.md"
+            with open(readme_path, "w") as f:
+                f.write(
+                    "---\n"
+                    "license: apache-2.0\n"
+                    "configs:\n"
+                    "- config_name: default\n"
+                    "  data_files:\n"
+                    f"  - split: test\n"
+                    f"    path: {Path(args.eval_output).name}\n"
+                    "---\n"
+                )
         else:
             print(f"Warning: Eval input not found: {args.eval_input}")
 
