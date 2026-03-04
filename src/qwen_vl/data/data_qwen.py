@@ -62,74 +62,77 @@ def preprocess_qwen_2_visual(
     if visual_type not in ["image", "video", "pointer"]:
         raise ValueError("visual_type must be either 'image', 'video', or 'pointer'")
 
-    tokenizer = copy.deepcopy(tokenizer)
+    old_chat_template = tokenizer.chat_template
     chat_template = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
     tokenizer.chat_template = chat_template
 
-    visual_replicate_index = 0
-    input_ids, targets = [], []
+    try:
+        visual_replicate_index = 0
+        input_ids, targets = [], []
 
-    for i, source in enumerate(sources):
-        try:
-            if roles[source[0]["from"]] != roles["human"]:
-                source = source[1:]
-        except:
-            print(sources)
-
-        input_id, target = [], []
-
-        input_id += tokenizer.apply_chat_template(
-            [{"role": "system", "content": system_message}]
-        )
-        target += [IGNORE_INDEX] * len(input_id)
-
-        for conv in source:
+        for i, source in enumerate(sources):
             try:
-                role = conv["role"]
-                content = conv["content"]
+                if roles[source[0]["from"]] != roles["human"]:
+                    source = source[1:]
             except:
-                role = conv["from"]
-                content = conv["value"]
+                print(sources)
 
-            role = roles.get(role, role)
-            if role == "user":
-                visual_tag = f"<{visual_type}>"
-                if visual_tag in content:
-                    parts = content.split(visual_tag)
-                    new_parts = []
-                    for i in range(len(parts) - 1):
-                        new_parts.append(parts[i])
-                        replacement = (
-                            "<|vision_start|>"
-                            + f"<|{visual_type}_pad|>"
-                            * grid_thw[visual_replicate_index]
-                            + "<|vision_end|>"
-                        )
-                        new_parts.append(replacement)
-                        visual_replicate_index += 1
-                    new_parts.append(parts[-1])
-                    content = "".join(new_parts)
+            input_id, target = [], []
 
-            conv = [{"role": role, "content": content}]
-            encode_id = tokenizer.apply_chat_template(conv)
-            input_id += encode_id
-            if role in ["user", "system"]:
-                target += [IGNORE_INDEX] * len(encode_id)
-            else:
-                target_mask = encode_id.copy()
-                target_mask[:3] = [IGNORE_INDEX] * 3
-                target += target_mask
+            input_id += tokenizer.apply_chat_template(
+                [{"role": "system", "content": system_message}]
+            )
+            target += [IGNORE_INDEX] * len(input_id)
 
-        assert len(input_id) == len(target), f"{len(input_id)} != {len(target)}"
-        input_ids.append(input_id)
-        targets.append(target)
+            for conv in source:
+                try:
+                    role = conv["role"]
+                    content = conv["content"]
+                except:
+                    role = conv["from"]
+                    content = conv["value"]
 
-    input_ids = torch.tensor(input_ids, dtype=torch.long)
-    targets = torch.tensor(targets, dtype=torch.long)
-    return dict(
-        input_ids=input_ids,
-        labels=targets,
-    )
+                role = roles.get(role, role)
+                if role == "user":
+                    visual_tag = f"<{visual_type}>"
+                    if visual_tag in content:
+                        parts = content.split(visual_tag)
+                        new_parts = []
+                        for i in range(len(parts) - 1):
+                            new_parts.append(parts[i])
+                            replacement = (
+                                "<|vision_start|>"
+                                + f"<|{visual_type}_pad|>"
+                                * grid_thw[visual_replicate_index]
+                                + "<|vision_end|>"
+                            )
+                            new_parts.append(replacement)
+                            visual_replicate_index += 1
+                        new_parts.append(parts[-1])
+                        content = "".join(new_parts)
+
+                conv = [{"role": role, "content": content}]
+                encode_id = tokenizer.apply_chat_template(conv)
+                input_id += encode_id
+                if role in ["user", "system"]:
+                    target += [IGNORE_INDEX] * len(encode_id)
+                else:
+                    target_mask = encode_id.copy()
+                    target_mask[:3] = [IGNORE_INDEX] * 3
+                    target += target_mask
+
+            assert len(input_id) == len(target), f"{len(input_id)} != {len(target)}"
+            input_ids.append(input_id)
+            targets.append(target)
+
+        input_ids = torch.tensor(input_ids, dtype=torch.long)
+        targets = torch.tensor(targets, dtype=torch.long)
+        return dict(
+            input_ids=input_ids,
+            labels=targets,
+        )
+    finally:
+        tokenizer.chat_template = old_chat_template
 
 
 class LazySupervisedDataset(Dataset):
@@ -257,7 +260,7 @@ class LazySupervisedDataset(Dataset):
             return np.array([1] * len(self.list_data_dict))
 
     def process_image_unified(self, image_file):
-        processor = copy.deepcopy(self.data_args.image_processor)
+        processor = self.data_args.image_processor
         image = Image.open(image_file).convert("RGB")
 
         visual_processed = processor.preprocess(image, return_tensors="pt")
@@ -307,19 +310,29 @@ class LazySupervisedDataset(Dataset):
             del vr  # Explicitly delete VideoReader to free memory
 
         fps = len(frame_idx) / video_length
-        processor = copy.deepcopy(self.data_args.image_processor)
+        processor = self.data_args.image_processor
+        old_max = processor.max_pixels
+        old_min = processor.min_pixels
+        old_longest = processor.size["longest_edge"]
+        old_shortest = processor.size["shortest_edge"]
         processor.max_pixels = self.data_args.video_max_frame_pixels
         processor.min_pixels = self.data_args.video_min_frame_pixels
         processor.size["longest_edge"] = processor.max_pixels
         processor.size["shortest_edge"] = processor.min_pixels
-        video_processed = processor.preprocess(
-            images=None, videos=video, return_tensors="pt"
-        )
+        try:
+            video_processed = processor.preprocess(
+                images=None, videos=video, return_tensors="pt"
+            )
+        finally:
+            processor.max_pixels = old_max
+            processor.min_pixels = old_min
+            processor.size["longest_edge"] = old_longest
+            processor.size["shortest_edge"] = old_shortest
         del video  # Free raw video array after processing
         video_tensor = video_processed["pixel_values_videos"]
         grid_thw = video_processed["video_grid_thw"][0]
         second_per_grid_ts = [
-            self.data_args.image_processor.temporal_patch_size / fps
+            processor.temporal_patch_size / fps
         ] * len(grid_thw)
         return video_tensor, grid_thw, second_per_grid_ts
     
@@ -393,39 +406,46 @@ class LazySupervisedDataset(Dataset):
             avg_fps = vr.get_avg_fps()
             frame_idx = get_frame_indices(total_frames, avg_fps)
             video = vr.get_batch(frame_idx).asnumpy()
-            
+            del vr
             images = [Image.fromarray(frame).convert("RGB") for frame in video]
+            del video
         return images
 
     def _get_item(self, i) -> Dict[str, torch.Tensor]:
-        sources = self.list_data_dict[i]
-        if isinstance(i, int):
-            sources = [sources]
-        assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
+        source = self.list_data_dict[i]
+        # Shallow copy to avoid mutating the original dataset dict
+        source = {**source, "conversations": copy.deepcopy(source["conversations"])}
+        sources = [source]
         video = None
-        
-        if "video" in sources[0]:
-            sources[0]["images"] = self.read_video_images(sources[0])
-            num_image = len(sources[0]["images"])
-            sources[0]["conversations"][0]["value"] = sources[0]["conversations"][0]["value"].replace(
+
+        if "video" in source:
+            source["images"] = self.read_video_images(source)
+            num_image = len(source["images"])
+            source["conversations"][0]["value"] = source["conversations"][0]["value"].replace(
                 DEFAULT_VIDEO_TOKEN, "".join([DEFAULT_IMAGE_TOKEN] * num_image)
             )
-            del sources[0]["video"]
-        
+            del source["video"]
+
         # # replace <image>\n with <image>
-        sources[0]["conversations"][0]["value"] = sources[0]["conversations"][0]["value"].replace(
+        source["conversations"][0]["value"] = source["conversations"][0]["value"].replace(
             f"{DEFAULT_IMAGE_TOKEN}\n", DEFAULT_IMAGE_TOKEN
         )
 
         # rename images tag
-        if "images" in sources[0]:
-            sources[0]["image"] = sources[0]["images"]
+        if "images" in source:
+            source["image"] = source["images"]
 
         # notice that we use images as the tag
-        if "image" in sources[0]:
-            image_folder = self.list_data_dict[i]["data_path"]
-            image_file = self.list_data_dict[i]["image"]
+        if "image" in source:
+            image_folder = source["data_path"]
+            image_file = source["image"]
             if isinstance(image_file, List):
+
+                sample_ct = 32
+                if len(image_file) > sample_ct:
+                    step = len(image_file) / sample_ct
+                    frames_indices = [int(i * step) for i in range(sample_ct)]
+                    image_file = [image_file[idx] for idx in frames_indices]
 
                 if isinstance(image_file[0], str):
                     image_file = [
@@ -437,7 +457,7 @@ class LazySupervisedDataset(Dataset):
                 else:
                     raise NotImplementedError
                 # draw visual markers
-                self.draw_visual_marks(image_file, sources[0].get("spar_info", None))
+                self.draw_visual_marks(image_file, source.get("spar_info", None))
 
                 image, grid_thw, geometry_encoder_inputs = [], [], []
                 for file in image_file:
@@ -445,13 +465,17 @@ class LazySupervisedDataset(Dataset):
                     image.append(ret["pixel_values"])
                     geometry_encoder_inputs.append(ret["geometry_encoder_inputs"])
                     grid_thw.append(ret["image_grid_thw"])
+                # Free PIL images after processing
+                for img in image_file:
+                    if isinstance(img, Image.Image):
+                        img.close()
+                del image_file
             else:
                 raise NotImplementedError
 
-            grid_thw_merged = copy.deepcopy(grid_thw)
             grid_thw_merged = [
-                merged_thw.prod() // self.data_args.image_processor.merge_size**2
-                for merged_thw in grid_thw_merged
+                thw.prod() // self.data_args.image_processor.merge_size**2
+                for thw in grid_thw
             ]
             sources = copy.deepcopy([e["conversations"] for e in sources])
             data_dict = preprocess_qwen_2_visual(
@@ -462,9 +486,9 @@ class LazySupervisedDataset(Dataset):
                 data_dict["input_ids"],
                 torch.stack(grid_thw, dim=0),
             )
-        elif "video" in sources[0]:
-            video_file = self.list_data_dict[i]["video"]
-            video_folder = self.list_data_dict[i]["data_path"]
+        elif "video" in source:
+            video_file = source["video"]
+            video_folder = source["data_path"]
             if isinstance(video_file, List):
                 if len(video_file) > 1:
                     video_file = [
@@ -481,13 +505,11 @@ class LazySupervisedDataset(Dataset):
                 video_file = os.path.join(video_folder, video_file)
                 video, grid_thw, second_per_grid_ts = self.process_video(video_file)
                 video = [video]
-            grid_thw_merged = copy.deepcopy(grid_thw)
             if not isinstance(grid_thw, Sequence):
-                grid_thw_merged = [grid_thw_merged]
                 grid_thw = [grid_thw]
             grid_thw_merged = [
-                merged_thw.prod() // self.data_args.image_processor.merge_size**2
-                for merged_thw in grid_thw_merged
+                thw.prod() // self.data_args.image_processor.merge_size**2
+                for thw in grid_thw
             ]
             sources = copy.deepcopy([e["conversations"] for e in sources])
             data_dict = preprocess_qwen_2_visual(
@@ -499,10 +521,10 @@ class LazySupervisedDataset(Dataset):
                 video_grid_thw=torch.stack(grid_thw, dim=0),
                 second_per_grid_ts=second_per_grid_ts,
             )
-        elif "pointer_data" in sources[0]:
+        elif "pointer_data" in source:
             # Handle Point3R pointer memory data using shared utility
-            pointer_data_path = sources[0]["pointer_data"]
-            data_folder = self.list_data_dict[i]["data_path"]
+            pointer_data_path = source["pointer_data"]
+            data_folder = source["data_path"]
 
             # Load pointer data using shared utility (handles truncation and memory management)
             pointer_data = load_pointer_data(
@@ -531,60 +553,63 @@ class LazySupervisedDataset(Dataset):
             else:
                 pointer_token = "<|pointer_pad|>"
 
-            tokenizer_copy = copy.deepcopy(self.tokenizer)
+            old_chat_template = self.tokenizer.chat_template
             chat_template = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
-            tokenizer_copy.chat_template = chat_template
+            self.tokenizer.chat_template = chat_template
 
-            input_ids, targets = [], []
+            try:
+                input_ids, targets = [], []
 
-            for source in sources_conv:
-                # Adjust roles if needed
-                if roles.get(source[0].get("from", source[0].get("role")), "") != "user":
-                    source = source[1:]
+                for source_conv in sources_conv:
+                    # Adjust roles if needed
+                    if roles.get(source_conv[0].get("from", source_conv[0].get("role")), "") != "user":
+                        source_conv = source_conv[1:]
 
-                input_id = []
-                target = []
+                    input_id = []
+                    target = []
 
-                # Add system message
-                input_id += tokenizer_copy.apply_chat_template(
-                    [{"role": "system", "content": system_message}]
-                )
-                target += [IGNORE_INDEX] * len(input_id)
+                    # Add system message
+                    input_id += self.tokenizer.apply_chat_template(
+                        [{"role": "system", "content": system_message}]
+                    )
+                    target += [IGNORE_INDEX] * len(input_id)
 
-                # Process each conversation turn
-                for conv in source:
-                    role = conv.get("role", conv.get("from"))
-                    content = conv.get("content", conv.get("value"))
-                    role = roles.get(role, role)
+                    # Process each conversation turn
+                    for conv in source_conv:
+                        role = conv.get("role", conv.get("from"))
+                        content = conv.get("content", conv.get("value"))
+                        role = roles.get(role, role)
 
-                    # EXPAND pointer token: grouped by timestamp (video) or flat (image)
-                    if self.pointer_format == "video" and pointer_timestamps is not None:
-                        content = expand_pointer_tokens_grouped(
-                            content, pointer_timestamps,
-                            frames_indices=frames_indices,
-                            pointer_token=pointer_token,
-                            add_frame_id=self.add_frame_id,
-                        )
-                    else:
-                        content = expand_pointer_tokens(content, num_pointer_tokens, pointer_token)
+                        # EXPAND pointer token: grouped by timestamp (video) or flat (image)
+                        if self.pointer_format == "video" and pointer_timestamps is not None:
+                            content = expand_pointer_tokens_grouped(
+                                content, pointer_timestamps,
+                                frames_indices=frames_indices,
+                                pointer_token=pointer_token,
+                                add_frame_id=self.add_frame_id,
+                            )
+                        else:
+                            content = expand_pointer_tokens(content, num_pointer_tokens, pointer_token)
 
-                    # Tokenize the expanded content
-                    conv_formatted = [{"role": role, "content": content}]
-                    encode_id = tokenizer_copy.apply_chat_template(conv_formatted)
-                    input_id += encode_id
+                        # Tokenize the expanded content
+                        conv_formatted = [{"role": role, "content": content}]
+                        encode_id = self.tokenizer.apply_chat_template(conv_formatted)
+                        input_id += encode_id
 
-                    if role in ["user", "system"]:
-                        target += [IGNORE_INDEX] * len(encode_id)
-                    else:
-                        target_mask = encode_id.copy()
-                        target_mask[:3] = [IGNORE_INDEX] * 3
-                        target += target_mask
+                        if role in ["user", "system"]:
+                            target += [IGNORE_INDEX] * len(encode_id)
+                        else:
+                            target_mask = encode_id.copy()
+                            target_mask[:3] = [IGNORE_INDEX] * 3
+                            target += target_mask
 
-                input_ids.append(input_id)
-                targets.append(target)
+                    input_ids.append(input_id)
+                    targets.append(target)
 
-            input_ids = torch.tensor(input_ids, dtype=torch.long)
-            targets = torch.tensor(targets, dtype=torch.long)
+                input_ids = torch.tensor(input_ids, dtype=torch.long)
+                targets = torch.tensor(targets, dtype=torch.long)
+            finally:
+                self.tokenizer.chat_template = old_chat_template
 
             data_dict = dict(
                 input_ids=input_ids,
@@ -625,17 +650,17 @@ class LazySupervisedDataset(Dataset):
                 position_ids=position_ids,
             )
 
-        if "image" in self.list_data_dict[i]:
+        if "image" in source:
             data_dict["pixel_values"] = image
             data_dict["image_grid_thw"] = grid_thw
             if getattr(self.data_args, "use_geometry_encoder", False):
                 data_dict["geometry_encoder_inputs"] = geometry_encoder_inputs
         # video exist in the data
-        elif "video" in self.list_data_dict[i]:
+        elif "video" in source:
             data_dict["pixel_values_videos"] = video
             data_dict["video_grid_thw"] = grid_thw
         # pointer_data exist in the data
-        elif "pointer_data" in self.list_data_dict[i]:
+        elif "pointer_data" in source:
             data_dict["pointer_memory_embeds"] = pointer_memory_embeds_to_store
             data_dict["pointer_positions"] = pointer_positions_to_store
             if deepstack_pointer_embeds_to_store is not None:
@@ -644,7 +669,7 @@ class LazySupervisedDataset(Dataset):
             if pointer_timestamps_to_store is not None:
                 data_dict["pointer_timestamps"] = pointer_timestamps_to_store
 
-        data_dict["tag"] = self.list_data_dict[i].get("tag", "2d")
+        data_dict["tag"] = source.get("tag", "2d")
         return data_dict
 
 

@@ -8,7 +8,6 @@ import torch
 from PIL import Image
 from torchvision import transforms as TF
 import numpy as np
-import copy
 
 def load_and_preprocess_images(image_path_list, mode="crop", target_size=518):
     """
@@ -154,7 +153,7 @@ def load_and_preprocess_images(image_path_list, mode="crop", target_size=518):
 def prepare_image_inputs(image, image_processor):
 
     images = load_and_preprocess_images([image])
-    geometry_encoder_inputs = copy.deepcopy(images[0])
+    geometry_encoder_inputs = images[0].clone()
     merge_size: int = getattr(image_processor, "merge_size")
     patch_size: int = getattr(image_processor, "patch_size")
     _, height, width = images[0].shape
