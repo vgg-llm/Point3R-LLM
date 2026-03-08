@@ -5,7 +5,6 @@ Replaces multiple <image> tokens with pointer tokens and pointer_data paths.
 """
 
 import json
-import argparse
 from pathlib import Path
 from tqdm import tqdm
 
@@ -92,82 +91,55 @@ configs:
         f.write(readme)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description='Convert scan2cap annotations to Point3R format'
-    )
-    parser.add_argument(
-        '--input',
-        type=str,
-        default='data/train/scan2cap_train_32frames.json',
-        help='Input annotation file path'
-    )
-    parser.add_argument(
-        '--output',
-        type=str,
-        default='data/train/scan2cap_train_32frames_point3r.json',
-        help='Output annotation file path'
-    )
-    args = parser.parse_args()
-
-    # Load input annotations
-    print(f"Loading annotations from: {args.input}")
-    input_path = Path(args.input)
+def convert_file(input_path, output_path):
+    """Convert a scan2cap JSON file to Point3R format."""
+    print(f"Loading: {input_path}")
+    input_path = Path(input_path)
     if not input_path.exists():
         print(f"Error: Input file not found at {input_path}")
-        return
+        return []
 
     with open(input_path, 'r') as f:
         annotations = json.load(f)
 
-    print(f"Total input annotations: {len(annotations)}")
-
-    # Convert annotations
-    converted_annotations = []
+    print(f"Total samples: {len(annotations)}")
+    converted = []
     skipped = 0
 
-    print("Converting annotations...")
-    for annotation in tqdm(annotations):
-        converted = convert_annotation(annotation)
-        if converted is not None:
-            converted_annotations.append(converted)
+    for annotation in tqdm(annotations, desc="Converting"):
+        result = convert_annotation(annotation)
+        if result is not None:
+            converted.append(result)
         else:
             skipped += 1
 
-    print(f"\nConversion complete!")
-    print(f"  Converted: {len(converted_annotations)}")
-    print(f"  Skipped:   {skipped}")
-
-    # Save output annotations
-    output_path = Path(args.output)
+    output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nSaving to: {output_path}")
+    print(f"Saving: {output_path}")
     with open(output_path, 'w') as f:
-        json.dump(converted_annotations, f, indent=2)
+        json.dump(converted, f, indent=2)
 
-    print("Done!")
+    print(f"  Converted: {len(converted)}, Skipped: {skipped}")
+    return converted
 
-    # Print sample conversion
-    if len(converted_annotations) > 0:
-        print("\n" + "="*80)
-        print("SAMPLE CONVERSION (First annotation)")
-        print("="*80)
 
-        print("\n--- Original ---")
-        orig = annotations[0]
-        print(f"Images: {len(orig.get('images', []))} files")
-        if 'images' in orig:
-            print(f"  First: {orig['images'][0]}")
-            print(f"  Last:  {orig['images'][-1]}")
-        print(f"Conversation (human): {orig['conversations'][0]['value'][:200]}...")
+def main():
+    base = Path("data")
 
-        print("\n--- Converted ---")
-        conv = converted_annotations[0]
-        print(f"Pointer data: {conv.get('pointer_data', 'N/A')}")
-        print(f"Images field removed: {'images' not in conv}")
-        print(f"Conversation (human): {conv['conversations'][0]['value'][:200]}...")
-        print("\n" + "="*80)
+    # Training set
+    convert_file(
+        base / "train" / "scan2cap_train_32frames.json",
+        base / "train" / "scan2cap_train_32frames_point3r.json",
+    )
+
+    # Evaluation set (val)
+    eval_dir = base / "evaluation" / "scan2cap_point3r"
+    convert_file(
+        base / "evaluation" / "scan2cap" / "scan2cap_val_32frames.json",
+        eval_dir / "val.json",
+    )
+    write_dataset_card(eval_dir, [("val", "val.json")])
 
 
 if __name__ == "__main__":
