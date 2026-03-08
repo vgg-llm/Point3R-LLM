@@ -27,7 +27,7 @@ def aggregate_qwen3vl_attention(step_attentions, layer_indices=None, keep_indice
     """Average attention across layers and heads for one generation step.
 
     Follows VLM-Visualizer's null-attention practice: zeroes the attention
-    to the first token (BOS) since it acts as an attention sink.
+    to the first token (attention sink, e.g. <|im_start|> in Qwen3-VL).
 
     Args:
         step_attentions: tuple of num_layers tensors, each (1, num_heads, q_len, kv_len)
@@ -68,8 +68,11 @@ def aggregate_qwen3vl_attention(step_attentions, layer_indices=None, keep_indice
         per_layer.append(attn)
 
     avg = torch.stack(per_layer).mean(dim=0)  # (kv_len,)
-    # Zero out BOS attention (null attention pattern)
-    avg[0] = 0.0
+    # Zero out first-token attention sink (e.g. <|im_start|> in Qwen3-VL).
+    # When keep_indices is used, non-pointer positions are already zeroed,
+    # making this a no-op.
+    if keep_indices is None:
+        avg[0] = 0.0
     # Re-normalize
     total = avg.sum()
     if total > 0:
@@ -191,25 +194,29 @@ def aggregate_attention_across_tokens(attention_matrix, mode="mean", token_indic
         raise ValueError(f"Unknown mode: {mode}")
 
 
-def precompute_dense_point_assignment(per_frame_pts3d, pointer_positions, pointer_timestamps, threshold_factor=1.0):
-    """Pre-compute the nearest-pointer assignment for each dense point.
+def precompute_dense_point_assignment(per_frame_pts3d, pointer_positions, pointer_timestamps,
+                                       threshold_factor=1.0, k=8):
+    """Pre-compute the K-nearest-pointer assignment for each dense point.
 
-    Builds a KD-tree per frame and finds the nearest pointer token for each
-    dense 3D point, restricted to same-timestamp pointers. This is done once
-    and cached so that changing attention weights only requires an O(N) lookup.
+    Builds a single global KD-tree from all pointer positions and finds the K
+    nearest pointers for each dense 3D point (across all frames). This is done
+    once and cached so that changing attention weights only requires an O(N)
+    lookup with Gaussian-weighted blending.
 
     Args:
         per_frame_pts3d: list of (N_i, 3) numpy arrays (dense points per frame).
         pointer_positions: (num_pointers, 3) numpy array.
-        pointer_timestamps: (num_pointers,) numpy array of frame indices.
+        pointer_timestamps: (num_pointers,) numpy array of frame indices (unused,
+            kept for API compatibility).
         threshold_factor: multiplier on the auto-computed inclusion threshold.
+        k: number of nearest pointers per dense point for Gaussian blending.
 
     Returns:
         assignments: list of dicts per frame, each with:
-            'global_indices': (N_i,) int array — index into pointer_positions for nearest pointer
-            'distances': (N_i,) float array — distance to nearest pointer
-            None if no pointers exist for that frame.
+            'global_indices': (N_i, k_actual) int array — indices into pointer_positions
+            'distances': (N_i, k_actual) float array — distances to nearest pointers
         threshold: float — the computed inclusion threshold.
+        sigma: float — Gaussian kernel width (median NN distance among pointers).
     """
     from scipy.spatial import cKDTree
 
@@ -221,93 +228,118 @@ def precompute_dense_point_assignment(per_frame_pts3d, pointer_positions, pointe
     else:
         threshold = float('inf')
 
+    sigma = threshold  # Gaussian width = median pointer spacing
+
+    # Build single global KD-tree from all pointers (no per-frame restriction)
+    k_actual = min(k, len(pointer_positions))
+    tree = cKDTree(pointer_positions)
+
     assignments = []
-    num_frames = len(per_frame_pts3d)
+    for pts_3d in per_frame_pts3d:
+        distances, global_indices = tree.query(pts_3d, k=k_actual)
 
-    for frame_idx in range(num_frames):
-        pts_3d = per_frame_pts3d[frame_idx]
-        frame_mask = pointer_timestamps == frame_idx
-
-        if frame_mask.sum() == 0:
-            assignments.append(None)
-            continue
-
-        frame_ptr_pos = pointer_positions[frame_mask]
-        global_indices_map = np.where(frame_mask)[0]  # map local→global pointer index
-
-        tree = cKDTree(frame_ptr_pos)
-        distances, local_indices = tree.query(pts_3d, k=1)
-        global_indices = global_indices_map[local_indices]
+        # When k_actual == 1, cKDTree returns (N,) — normalize to 2D
+        if k_actual == 1:
+            distances = distances[:, np.newaxis]
+            global_indices = global_indices[:, np.newaxis]
 
         assignments.append({
             'global_indices': global_indices,
             'distances': distances,
         })
 
-    return assignments, threshold
+    return assignments, threshold, sigma
 
 
 def compute_attention_colors_from_assignment(assignments, threshold, attention_weights,
-                                              per_frame_pts3d, colormap="inferno",
+                                              per_frame_pts3d, sigma=None, colormap="inferno",
                                               gamma=0.2, hide_unassigned=False):
-    """Compute per-frame RGB colors from pre-computed assignment and attention weights.
+    """Compute per-frame RGB colors using Gaussian-weighted attention blending.
+
+    Each dense point's attention is a weighted sum of its K nearest pointers'
+    attention values, with weights decaying as a 3D Gaussian: w = exp(-d²/(2σ²)).
+    All points are colored — the Gaussian naturally handles distance falloff.
 
     Args:
         assignments: from precompute_dense_point_assignment().
-        threshold: inclusion threshold.
+        threshold: unused, kept for API compatibility.
         attention_weights: (num_pointers,) numpy array.
         per_frame_pts3d: list of (N_i, 3) numpy arrays (only used for shape).
+        sigma: Gaussian kernel width. If None, uses threshold as fallback.
         colormap: matplotlib colormap name.
         gamma: gamma correction exponent.
-        hide_unassigned: if True, return masks for filtering out unassigned points.
+        hide_unassigned: unused, kept for API compatibility.
 
     Returns:
         per_frame_colors: list of (N_i, 3) uint8 arrays.
-        per_frame_masks: list of (N_i,) bool arrays (True = assigned).
+        per_frame_masks: list of (N_i,) bool arrays (all True).
+        per_frame_alpha: list of (N_i,) float32 arrays (normalized attention, 0-1).
     """
     import matplotlib.cm as cm
     cmap = cm.get_cmap(colormap)
 
-    # Compute global min/max of assigned attention for consistent normalization
-    all_valid = []
-    for frame_idx, assignment in enumerate(assignments):
+    if sigma is None:
+        sigma = threshold
+    two_sigma_sq = 2.0 * sigma * sigma
+
+    # First pass: compute Gaussian-weighted attention per point, collect for normalization
+    per_frame_weighted_attn = []
+    all_valid_values = []
+
+    for assignment in assignments:
         if assignment is None:
+            per_frame_weighted_attn.append(None)
             continue
-        within = assignment['distances'] <= threshold
-        if within.any():
-            all_valid.append(attention_weights[assignment['global_indices'][within]])
-    if len(all_valid) > 0:
-        all_valid = np.concatenate(all_valid)
-        global_vmin, global_vmax = float(all_valid.min()), float(all_valid.max())
+
+        dists = assignment['distances']       # (N, K)
+        gidx = assignment['global_indices']   # (N, K)
+
+        ptr_attn = attention_weights[gidx]    # (N, K)
+
+        # Gaussian weights: w_i = exp(-d_i² / (2σ²))
+        gauss_weights = np.exp(-dists**2 / two_sigma_sq)  # (N, K)
+        # Zero out infinite distances (when fewer pointers than K)
+        gauss_weights[~np.isfinite(dists)] = 0.0
+
+        numerator = (gauss_weights * ptr_attn).sum(axis=1)       # (N,)
+        denominator = np.maximum(gauss_weights.sum(axis=1), 1e-12)  # (N,)
+        weighted_attn = numerator / denominator                   # (N,)
+
+        all_valid_values.append(weighted_attn)
+        per_frame_weighted_attn.append(weighted_attn)
+
+    # Global normalization range
+    if len(all_valid_values) > 0:
+        all_valid_concat = np.concatenate(all_valid_values)
+        global_vmin, global_vmax = float(all_valid_concat.min()), float(all_valid_concat.max())
     else:
         global_vmin, global_vmax = 0.0, 1.0
 
+    # Second pass: apply colormap
     per_frame_colors = []
     per_frame_masks = []
+    per_frame_alpha = []
 
-    for frame_idx, assignment in enumerate(assignments):
+    for frame_idx, cached in enumerate(per_frame_weighted_attn):
         num_pts = per_frame_pts3d[frame_idx].shape[0]
 
-        if assignment is None:
+        if cached is None:
             per_frame_colors.append(np.full((num_pts, 3), 40, dtype=np.uint8))
             per_frame_masks.append(np.zeros(num_pts, dtype=bool))
+            per_frame_alpha.append(np.zeros(num_pts, dtype=np.float32))
             continue
 
-        within = assignment['distances'] <= threshold
-        mask = within
-        colors = np.full((num_pts, 3), 40, dtype=np.uint8)  # dark gray default
-
-        if mask.any():
-            valid_attn = attention_weights[assignment['global_indices'][mask]]
-            if global_vmax > global_vmin:
-                normalized = (valid_attn - global_vmin) / (global_vmax - global_vmin)
-            else:
-                normalized = np.ones_like(valid_attn) * 0.5
-            normalized = np.power(np.clip(normalized, 0, 1), gamma)
-            rgba = cmap(normalized)
-            colors[mask] = (rgba[:, :3] * 255).astype(np.uint8)
+        weighted_attn = cached
+        if global_vmax > global_vmin:
+            normalized = (weighted_attn - global_vmin) / (global_vmax - global_vmin)
+        else:
+            normalized = np.ones_like(weighted_attn) * 0.5
+        normalized = np.power(np.clip(normalized, 0, 1), gamma)
+        rgba = cmap(normalized)
+        colors = (rgba[:, :3] * 255).astype(np.uint8)
 
         per_frame_colors.append(colors)
-        per_frame_masks.append(mask)
+        per_frame_masks.append(np.ones(num_pts, dtype=bool))
+        per_frame_alpha.append(normalized.astype(np.float32))
 
-    return per_frame_colors, per_frame_masks
+    return per_frame_colors, per_frame_masks, per_frame_alpha

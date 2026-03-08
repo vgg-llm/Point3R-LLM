@@ -22,7 +22,7 @@ import torch
 sys.path.insert(0, "src")
 sys.path.insert(0, "scripts/demo")
 
-from demo_point3r import load_models, preprocess_images, set_seed
+from demo_point3r import load_models, set_seed
 from attention_utils import (
     identify_pointer_indices,
     extract_pointer_attention,
@@ -53,7 +53,7 @@ def run_models_with_attention(
     # Load pointer data
     if pointer_data is None:
         print(f"\nLoading pointer data from {pointer_data_path}...")
-        pointer_data = torch.load(pointer_data_path, weights_only=True)
+        pointer_data = torch.load(pointer_data_path, weights_only=False)
     else:
         print("\nUsing pre-loaded pointer data")
 
@@ -158,7 +158,19 @@ def visualize_global_heatmap(attention_matrix, generated_tokens_text, pointer_ti
     """Panel 1: Global heatmap of text tokens (y) vs pointer tokens (x)."""
     fig, ax = plt.subplots(figsize=(16, max(6, len(generated_tokens_text) * 0.25)), dpi=150)
 
-    data = attention_matrix.numpy()
+    data = attention_matrix.numpy().copy()
+
+    # Zero out the first few tokens of each timestep
+    data[:, 50:150] = 0
+    # if pointer_timestamps is not None:
+    #     unique_frames = pointer_timestamps.unique(sorted=True)
+    #     idx = 0
+    #     for f in unique_frames:
+    #         count = (pointer_timestamps == f).sum().item()
+    #         data[:, idx:idx+3] = 0
+
+    #         print(idx)
+    #         idx += count
 
     # Apply gamma correction for better visibility
     gamma = 0.5
@@ -177,17 +189,18 @@ def visualize_global_heatmap(attention_matrix, generated_tokens_text, pointer_ti
     if pointer_timestamps is not None:
         unique_frames = pointer_timestamps.unique(sorted=True)
         boundaries = []
-        frame_centers = []
+        offsets = []
         offset = 0
         for f in unique_frames:
             count = (pointer_timestamps == f).sum().item()
-            frame_centers.append(offset + count / 2)
             offset += count
+            offsets.append(offset)
+            print(offset)
             boundaries.append(offset - 0.5)
         # Draw frame boundaries
-        for b in boundaries[:-1]:
-            ax.axvline(x=b, color="white", linewidth=0.5, alpha=0.7)
-        ax.set_xticks([c for c in frame_centers])
+        # for b in boundaries[:-1]:
+        #     ax.axvline(x=b, color="white", linewidth=0.5, alpha=0.7)
+        ax.set_xticks(offsets)
         ax.set_xticklabels([f"F{f.item()}" for f in unique_frames], fontsize=6)
     else:
         ax.set_xlabel("Pointer Token Index")
@@ -207,9 +220,11 @@ def visualize_per_token_grids(attention_matrix, generated_tokens_text, pointer_t
         print("Skipping per-token grids (no pointer_timestamps)")
         return
 
-    # Find tokens with highest total attention to pointers
-    total_attn = attention_matrix.sum(dim=1)
-    top_indices = total_attn.argsort(descending=True)[:top_k]
+    # Find tokens with most concentrated pointer attention (highest peak)
+    # Note: sum(dim=1) is always ~1.0 due to renormalization in extract_pointer_attention,
+    # so we use max attention to a single pointer as the selection criterion.
+    peak_attn = attention_matrix.max(dim=1).values
+    top_indices = peak_attn.argsort(descending=True)[:top_k]
     top_indices = top_indices.sort().values  # Keep generation order
 
     cols = 4
@@ -261,11 +276,14 @@ def visualize_temporal_profile(attention_matrix, generated_tokens_text, pointer_
     unique_frames = pointer_timestamps.unique(sorted=True)
     num_generated = attention_matrix.shape[0]
 
+    data = attention_matrix.numpy().copy()
+    data[:, 50:150] = 0
+
     # Compute per-frame attention for each generation step
     frame_attention = np.zeros((num_generated, len(unique_frames)))
     for fi, frame in enumerate(unique_frames):
         mask = pointer_timestamps == frame
-        frame_attention[:, fi] = attention_matrix[:, mask].sum(dim=1).numpy()
+        frame_attention[:, fi] = data[:, mask].sum(dim=1).numpy()
 
     fig, ax = plt.subplots(figsize=(14, 5), dpi=150)
     im = ax.imshow(frame_attention.T, aspect="auto", cmap="viridis", interpolation="nearest")

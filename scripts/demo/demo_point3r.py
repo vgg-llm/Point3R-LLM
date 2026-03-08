@@ -65,8 +65,8 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
 
         # Load the base processor first
         print("Loading processor...")
-        min_pixels = 192 * 32 * 32
-        max_pixels = 192 * 32 * 32
+        min_pixels = 196 * 32 * 32
+        max_pixels = 196 * 32 * 32
         # max_pixels = 1280 * 32 * 32
         # min_pixels = 256 * 28 * 28
         # max_pixels = 1280 * 28 * 28
@@ -364,8 +364,8 @@ def preprocess_images(
         grid_thw=grid_thw,
         deepstack_image_embeds=deepstack_image_embeds if deepstack_image_embeds else None,
         device=point3r_device,
-        no_crop=True,
-        size=(expected_width,expected_height),
+        no_crop=False,
+        size=256,
         verbose=True,
         lambda_decay=lambda_decay,
         max_memory_tokens=max_memory_tokens,
@@ -1184,7 +1184,7 @@ if __name__=='__main__':
     use_merge = True
     postfix = "_compact" if use_merge else ""
     input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
-    pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}.pt"
+    pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}_256.pt"
 
     # scene_id = "ac48a9b736"
     # sample_ct = 32
@@ -1205,7 +1205,7 @@ if __name__=='__main__':
     # query = "Describe this image."
     query = "What is the task? Did the robot succeeded to do the task? If failed, analyze the reason."
     model_path="Qwen/Qwen3-VL-4B-Instruct"
-    use_viser = False
+    use_viser = True
     model, processor, min_pixels, max_pixels, point3r_model = load_models(
         model_path=model_path, pointer_format=pointer_format, use_merge=use_merge
     )
