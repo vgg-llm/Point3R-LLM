@@ -9,7 +9,7 @@ import numpy as np
 from tqdm import tqdm
 import pickle
 from lmms_eval.tasks.threedod.utils import EulerDepthInstance3DBoxes
-from utils import _9dof_transform_world2cam, sample_images_and_best_view, uniform_sample_images
+from utils import _9dof_transform_world2cam, sample_images_and_best_view, uniform_sample_images_custom
 
 # modified from https://github.com/3dlg-hcvc/M3DRef-CLIP/blob/main/dataset/scanrefer/add_evaluation_labels.py
 def get_semantic_mapping_file(file_path, mapping_name):
@@ -121,12 +121,9 @@ def match_scanrefer_bbox_with_embodiedscan(scan, scanrefer_bbox):
 
 
 def process_data_item(item, scan, desc, answer, images, box, split, object_json=None):
-    image_tokens = "".join(["Frame-{}: <image>".format(i) for i in range(len(images))])
+    image_tokens = "".join(["<image>".format(i) for i in range(len(images))])
     # We select the frame with the clearest view of the object.
-    prompt=f"""Localize the first clear frame in the video showing the object described in the text.
-Text: {desc}
-Output a JSON dictionary with the frame index in "frame" and its 3D bounding box in "bbox_3d" in the frame's coordinates.
-"""
+    prompt=f"Localize the object according to the following description.\n{desc}\nOutput a JSON dictionary with the 3D bounding box in \"bbox_3d\"."
     question = f"{image_tokens}\n{prompt}"
     output = {
         "images": [image["img_path"] for image in images],
@@ -194,24 +191,20 @@ def main(data, args):
                 continue
             
             for _ in range(2):
-                images, frame_id = sample_images_and_best_view(scan, args.nframes, gt_instance_id)
-                if frame_id == -1:
-                    missing_num += 1
-                    print(f"Missing instance: {item['scene_id']}, {item['object_id']}")
-                    continue
-
+                images = uniform_sample_images_custom(scan['images'], args.nframes)
+                
                 axis_align_matrix = np.array(scan['axis_align_matrix'])
-                extrinsic = axis_align_matrix @ np.array(images[frame_id]["cam2global"])    # current camera to world
+                reference_frame = images[-1] if args.reference_frame == "last" else images[0]
+                extrinsic = axis_align_matrix @ np.array(reference_frame["cam2global"])
                 bbox_3d_in_cam = _9dof_transform_world2cam(box, extrinsic, convention="ZXY")
                 object_json = {
-                    "frame": frame_id,
                     "bbox_3d": [round(x, 2) for i, x in enumerate(bbox_3d_in_cam)]
                 }
                 answer = f"```json\n\t{json.dumps(object_json)}\n```"
                 output = process_data_item(item, scan, desc, answer, images, box, split=split, object_json=object_json)
                 all_data.append(output)
         else:
-            images = uniform_sample_images(scan['images'], args.nframes)
+            images = uniform_sample_images_custom(scan['images'], args.nframes)
             answer = ""
             output = process_data_item(item, scan, desc, answer, images, box, split=split)
             all_data.append(output)
@@ -221,11 +214,18 @@ def main(data, args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--embodiedscan", type=str, default="/mnt/data0/zhengduo/data/embodiedscan-v2")
-    parser.add_argument("--scanrefer_dir", type=str, default="/mnt/data0/zhengduo/data/scanrefer/")
-    parser.add_argument("--scannet_dir", type=str, default="data/media/scannet/")
-    parser.add_argument("--output_dir", type=str, default="data/new_train")
+    parser.add_argument("--scanrefer_dir", type=str, default="/home/gwakcy/datasets/scanrefer/")
+    parser.add_argument("--scannet_dir", type=str, default="./data/media/scannet")
+    parser.add_argument("--embodiedscan", type=str, default="/home/gwakcy/datasets/embodiedscan-v2")
+    parser.add_argument("--reference_frame", type=str, default="first")
+    parser.add_argument("--output_dir", type=str, default="data/demo_data")
     parser.add_argument("--nframes", type=int, default=32)
+
+    # parser.add_argument("--embodiedscan", type=str, default="/mnt/data0/zhengduo/data/embodiedscan-v2")
+    # parser.add_argument("--scanrefer_dir", type=str, default="/mnt/data0/zhengduo/data/scanrefer/")
+    # parser.add_argument("--scannet_dir", type=str, default="data/media/scannet/")
+    # parser.add_argument("--output_dir", type=str, default="data/new_train")
+    # parser.add_argument("--nframes", type=int, default=32)
     parser.add_argument("--max_samples", type=int, default=-1)
     parser.add_argument("--split", type=str, default="train", choices=["train", "val"])
     parser.add_argument("--workers", type=int, default=8)
@@ -260,8 +260,8 @@ if __name__ == "__main__":
         all_data.extend(data)
         missing_num += missing
     
-    with open(os.path.join(args.output_dir, f"scanrefer_{args.split}_{args.nframes}frames.json"), "w") as f:
+    with open(os.path.join(args.output_dir, f"scanrefer_{args.split}_{args.nframes}frames_from_frame_0.json"), "w") as f:
         json.dump(all_data, f, indent=2)
-    print(f"Saved to {os.path.join(args.output_dir, f'scanrefer_{args.split}_{args.nframes}frames.json')}")
+    print(f"Saved to {os.path.join(args.output_dir, f'scanrefer_{args.split}_{args.nframes}frames_from_frame_0.json')}")
     print(f"Missing num: {missing_num}")
     print(f"Total num: {len(all_data)}")

@@ -4,34 +4,29 @@ import torch
 import pandas as pd
 from pathlib import Path
 import yaml
-import pickle
 import numpy as np
 from PIL import Image
 from loguru import logger as eval_logger
-from scipy.spatial.transform import Rotation as R
 from lmms_eval.tasks.threedod.utils import EulerDepthInstance3DBoxes
 
-with open(Path(__file__).parent / "scanrefer.yaml", "r") as f:
+with open(Path(__file__).parent / "scanrefer_point3r.yaml", "r") as f:
     raw_data = f.readlines()
     safe_data = []
     for i, line in enumerate(raw_data):
         if "!function" not in line:
             safe_data.append(line)
 media_dir = yaml.safe_load("".join(safe_data))["metadata"]["media_dir"]
-# embodiedscan_path = yaml.safe_load("".join(safe_data))["metadata"]["embodiedscan_path"]
-# with open(embodiedscan_path, "rb") as f:
-#     data = pickle.load(f)["data_list"]
-#     id2scene = {sample["sample_id"]: sample for sample in data}
+
 
 def scanrefer_doc_to_visual(doc):
-    image_files = doc["images"]
+    image_files = doc.get("images", [])
     images = [
         Image.open(
             os.path.join(media_dir, image_file)
         ).convert("RGB")
         for image_file in image_files
     ]
-    return [images]    
+    return [images]
 
 
 def scanrefer_doc_to_text(doc, lmms_eval_specific_kwargs=None):
@@ -39,22 +34,9 @@ def scanrefer_doc_to_text(doc, lmms_eval_specific_kwargs=None):
     return prompt
 
 
-def scanrefer_bbox_to_9dof(bbox, convention, extrinsic=None):
-    center = bbox[0: 3]
-    sizes = bbox[3:6]
-    rot = R.from_euler(convention, np.array(bbox[6:9]))
-    if extrinsic is not None:
-        center = (extrinsic @ np.array([*center, 1]).reshape(4, 1)).reshape(4)[:3].tolist()
-        mat = extrinsic[:3, :3] @ rot.as_matrix()
-        rot = R.from_matrix(mat)
-    euler = list(rot.as_euler(convention))
-
-    return center + sizes + euler
-
-
 def scanrefer_process_results(doc, results):
     lines = results[0].strip('\n').strip("```").strip("json").strip("\n").split("\n")
-    gt_bbox = doc["gt_bbox"]
+    gt_bbox_cam = doc["gt_bbox_cam"]
     pred_dict = None
     for line in lines:
         if "bbox_3d" in line:
@@ -71,12 +53,11 @@ def scanrefer_process_results(doc, results):
             assert "bbox_3d" in pred_dict and isinstance(pred_dict["bbox_3d"], list) and len(pred_dict["bbox_3d"]) == 9, \
                 "Invalid bbox_3d format"
 
-            # Use first frame (reference frame) extrinsic to transform pred bbox back to world coords
-            extrinsic = np.array(doc["axis_align_matrix"]) @ np.array(doc["cam2global"][0])
-            pred_bbox = scanrefer_bbox_to_9dof(pred_dict["bbox_3d"], convention="ZXY", extrinsic=extrinsic)
+            pred_bbox = pred_dict["bbox_3d"]
+            # IoU computed directly in camera space (invariant under rigid transforms)
             iou = EulerDepthInstance3DBoxes.overlaps(
                 EulerDepthInstance3DBoxes(torch.tensor([pred_bbox]), convention="ZXY"),
-                EulerDepthInstance3DBoxes(torch.tensor([gt_bbox]), convention="ZXY")
+                EulerDepthInstance3DBoxes(torch.tensor([gt_bbox_cam]), convention="ZXY")
             ).item()
         except Exception as e:
             eval_logger.error(f"Error parsing pred_dict: {pred_dict} with error: {e}")
@@ -84,8 +65,7 @@ def scanrefer_process_results(doc, results):
     ret = {
         'iou': iou,
         'pred_bbox': pred_bbox,
-        'gt_bbox': gt_bbox,
-        "images": doc["images"]
+        'gt_bbox_cam': gt_bbox_cam,
     }
     return {"scanrefer_score": ret}
 
