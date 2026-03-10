@@ -32,8 +32,11 @@ export BASE_INTERVAL=1
 export VIDEO_MAX_FRAMES=32
 export VIDEO_MIN_FRAMES=4
 
+export SAVE_STEPS=200
+# export EXTRA_TRAIN_ARGS="--resume_from_checkpoint ./outputs/robofac_Qwen3VL_4b/checkpoint-400"
+
 # --- Train ---
-bash scripts/train/train.sh
+# bash scripts/train/train.sh
 
 # --- vLLM scoring server (GPU 7) ---
 # Serves LLM for open-ended question scoring during evaluation.
@@ -75,21 +78,21 @@ bash scripts/train/train.sh
 # --- Evaluate (GPUs 0-6, GPU 7 reserved for vLLM) ---
 # export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 
-export MODEL_PATH="./outputs/${EXP_NAME}"
+# export MODEL_PATH="./outputs/${EXP_NAME}"
 
 export BENCHMARKS="robofac"
 export EVAL_MODEL_TYPE="point3r_llm_v2"
-export OPENAI_API_KEY="local"
-export ROBOFAC_LLM_LOCAL="Qwen/Qwen3-4B-Instruct-2507"
+# export OPENAI_API_KEY="local"
+# export ROBOFAC_LLM_LOCAL="Qwen/Qwen3-4B-Instruct-2507"
 # export OPENAI_API_KEY="sk-..."           # your real OpenAI API key
 # export ROBOFAC_LLM_MODEL="gpt-4o"       # or any OpenAI model
 # Do NOT set ROBOFAC_LLM_LOCAL when using OpenAI API
 export NUM_PROCESSES=8
-export EVAL_LIMIT=50
+# export EVAL_LIMIT=50
 export MAX_LENGTH=32768
-# bash scripts/evaluation/eval.sh
+bash scripts/evaluation/eval.sh
 
-nvidia-smi
-date
+# nvidia-smi
+# date
 
-echo "##### END #####"
+# echo "##### END #####"

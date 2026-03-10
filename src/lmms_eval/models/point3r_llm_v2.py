@@ -70,7 +70,7 @@ from lmms_eval import utils
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
-from lmms_eval.models.model_utils.load_video import read_video_pyav_base64
+from lmms_eval.models.model_utils.load_video import read_video_pyav_base64, read_video_pyav_pil
 
 from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
 from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
@@ -552,16 +552,10 @@ class Point3RLLMv2(lmms):
                 elif len(visuals) > 0:
                     visual = visuals[i] if i < len(visuals) else None
                     if isinstance(visual, str) and visual.endswith((".mp4", ".avi", ".mov")):  # Video file
-                        vr = decord.VideoReader(visual)
-                        image_num = len(vr)
-                        if image_num < self.max_num_frames:
-                            frame_indices = np.arange(image_num)
-                        else:
-                            frame_indices = np.linspace(0, image_num - 1, self.max_num_frames).astype(int)
-                        frames = [vr[i].asnumpy() for i in frame_indices]
+                        frames = read_video_pyav_pil(visual, num_frm=self.max_num_frames)
                         visual_content = []
                         for frame in frames:
-                            image = Image.fromarray(frame).convert("RGB")
+                            image = frame.convert("RGB")
                             visual_content.append({"type": "image", "image": image})
                         message.append({"role": "user", "content": visual_content + [{"type": "text", "text": context}]})
                     elif isinstance(visual, Image.Image):  # Single image

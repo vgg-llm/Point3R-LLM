@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, 'src')
 from natsort import natsorted
 
-from transformers import AutoProcessor
+from transformers import AutoProcessor, AutoConfig
 from qwen_vl.model.point3r.point3r import Point3R
 from qwen_vl.model.point3r.extract_memory import extract_pointer_memory, visualize_point3r_viser
 from qwen_vl_utils import process_vision_info
@@ -46,32 +46,63 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
     print("="*70)
     stage0_start = time()
 
-    if 'Qwen3-VL' in model_path or 'Qwen3VL' in model_path:
+    # Load config first to detect model type and features
+    config = AutoConfig.from_pretrained(model_path, cache_dir="./cache")
+    is_qwen3 = (
+        getattr(config, 'model_type', '') == 'qwen3_vl'
+        or 'Qwen3-VL' in model_path
+        or 'Qwen3VL' in model_path
+    )
+
+    # Print config summary
+    print(f"Loading model from: {model_path}")
+    print(f"  model_type: {getattr(config, 'model_type', 'unknown')}")
+    print(f"  architectures: {getattr(config, 'architectures', [])}")
+    print(f"  use_pointer_memory: {getattr(config, 'use_pointer_memory', False)}")
+    print(f"  merge_memory_feat: {getattr(config, 'merge_memory_feat', False)}")
+    print(f"  memory_fusion_method: {getattr(config, 'memory_fusion_method', 'N/A')}")
+    print(f"  use_pointer_position_encoding: {getattr(config, 'use_pointer_position_encoding', False)}")
+    print(f"  rope_mode: {getattr(config, 'rope_mode', 'none')}")
+
+    if is_qwen3:
         from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
         from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
-        # Load model with memory-efficient settings
-        print(f"Loading model from: {model_path}")
+
+        # Add missing vision/text config attributes for compatibility (same as training pipeline)
+        if hasattr(config, "vision_config"):
+            if not hasattr(config.vision_config, "fullatt_block_indexes"):
+                depth = getattr(config.vision_config, "depth", 27)
+                config.vision_config.fullatt_block_indexes = list(range(depth))
+            if not hasattr(config.vision_config, "window_size"):
+                config.vision_config.window_size = 112
+        if hasattr(config, "text_config"):
+            num_hidden_layers = getattr(config.text_config, "num_hidden_layers", 32)
+            if not hasattr(config.text_config, "use_sliding_window"):
+                config.text_config.use_sliding_window = False
+            if not hasattr(config.text_config, "sliding_window"):
+                config.text_config.sliding_window = None
+            if not hasattr(config.text_config, "max_window_layers"):
+                config.text_config.max_window_layers = num_hidden_layers
+            if not hasattr(config.text_config, "layer_types"):
+                config.text_config.layer_types = ["full_attention"] * num_hidden_layers
+
         extra_kwargs = {}
         if attn_implementation is not None:
             extra_kwargs["attn_implementation"] = attn_implementation
         model = Qwen3VLForConditionalGenerationWithPoint3R.from_pretrained(
             model_path,
+            config=config,
             cache_dir="./cache",
-            torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
-            device_map="auto" if device is None else device,  # Automatically distribute model across available devices
-            low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
+            torch_dtype=torch.bfloat16,
+            device_map="auto" if device is None else device,
+            low_cpu_mem_usage=True,
             **extra_kwargs,
         )
 
         # Load the base processor first
         print("Loading processor...")
-        min_pixels = 196 * 32 * 32
-        max_pixels = 196 * 32 * 32
-        # max_pixels = 1280 * 32 * 32
-        # min_pixels = 256 * 28 * 28
-        # max_pixels = 1280 * 28 * 28
-        # min_pixels = 256 * 28 * 28
-        # max_pixels = 1280 * 28 * 28
+        min_pixels = 300 * 32 * 32
+        max_pixels = 300 * 32 * 32
         base_processor = AutoProcessor.from_pretrained(
             model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
         )
@@ -88,17 +119,16 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
         from qwen_vl.model.modeling_qwen_point3r import Qwen2_5_VLForConditionalGenerationWithPoint3R
         from qwen_vl.model.processing_qwen2_5_vl import Qwen2_5_VLProcessorWithPoint3R
 
-        # Load model with memory-efficient settings
-        print(f"Loading model from: {model_path}")
         extra_kwargs = {}
         if attn_implementation is not None:
             extra_kwargs["attn_implementation"] = attn_implementation
         model = Qwen2_5_VLForConditionalGenerationWithPoint3R.from_pretrained(
             model_path,
+            config=config,
             cache_dir="./cache",
-            torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
-            device_map="auto" if device is None else device,  # Automatically distribute model across available devices
-            low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
+            torch_dtype=torch.bfloat16,
+            device_map="auto" if device is None else device,
+            low_cpu_mem_usage=True,
             **extra_kwargs,
         )
 
@@ -224,6 +254,7 @@ def preprocess_images(
         sample_ct = 32,
         max_memory_tokens = None,
         image_extensions = ("*.jpg", "*.jpeg", "*.png", "*.JPG"),
+        save_point3r_outputs = False,
     ):
 
     # Example 2: Using the model with pointer memory
@@ -365,11 +396,12 @@ def preprocess_images(
         deepstack_image_embeds=deepstack_image_embeds if deepstack_image_embeds else None,
         device=point3r_device,
         no_crop=False,
-        size=256,
+        size=(expected_width, expected_height),
         verbose=True,
         lambda_decay=lambda_decay,
         max_memory_tokens=max_memory_tokens,
         frames_indices=frames_indices,
+        save_point3r_outputs=save_point3r_outputs,
     )
 
     if use_viser:
@@ -430,6 +462,7 @@ def preprocess_video(
         lambda_decay = 1.0,
         sample_ct = 32,
         max_memory_tokens = None,
+        save_point3r_outputs = False,
     ):
 
     from PIL import Image
@@ -453,7 +486,7 @@ def preprocess_video(
             ],
         }
     ]
-    _, video_inputs, video_kwargs = process_vision_info(vision_message, image_patch_size=16, return_video_kwargs=True, return_video_metadata=True)
+    _, video_inputs, video_kwargs = process_vision_info(vision_message, image_patch_size=32, return_video_kwargs=True, return_video_metadata=True)
 
     video_tensor, video_metadata = video_inputs[0]
     # video_tensor is shape (T, C, H, W) with float values in [0, 255] (from fetch_video)
@@ -541,6 +574,7 @@ def preprocess_video(
         lambda_decay=lambda_decay,
         max_memory_tokens=max_memory_tokens,
         frames_indices=frames_indices,
+        save_point3r_outputs=save_point3r_outputs,
     )
 
     if use_viser:
@@ -911,7 +945,8 @@ def run_scan2cap(
     model_path="Qwen/Qwen2.5-VL-3B-Instruct",
     auto_preprocess=False,
     save_preprocessed=True,
-    use_viser=False
+    use_viser=False,
+    visualize_attention_3d=False
 ):
     """
     Run scan2cap evaluation on a dataset with pre-computed pointer memory.
@@ -929,6 +964,8 @@ def run_scan2cap(
         save_preprocessed: If True, save generated pointer_data to disk for future use
                           Only used when auto_preprocess=True (default: True)
         use_viser: Enable viser visualization during preprocessing (default: False)
+        visualize_attention_3d: If True, run inference with attention capture and launch
+                               interactive 3D attention visualization per sample (default: False)
     """
     import json
     import os
@@ -965,7 +1002,8 @@ def run_scan2cap(
 
     model, processor, min_pixels, max_pixels, _ = load_models(
         load_point3r=False,
-        model_path=model_path
+        model_path=model_path,
+        attn_implementation="eager" if visualize_attention_3d else None
     )
 
     model_end = time()
@@ -1067,6 +1105,7 @@ def run_scan2cap(
                         annotation_result=extract_box_and_coordinates_from_scan2cap(scan2cap_annotation_path),
                         scannet_pth_path=scannet_pth_path if use_viser else None,
                         image_extensions=("*.jpg",),
+                        save_point3r_outputs=True,
                     )
 
                 except Exception as e:
@@ -1082,13 +1121,53 @@ def run_scan2cap(
                 print(f"Loaded and cached pointer data from {pointer_data_path}")
 
             # Run inference with cached pointer data
-            generated_response = run_models(
-                model=model,
-                processor=processor,
-                pointer_data_path=pointer_data_path,
-                query=query,
-                pointer_data=pointer_data_cache[pointer_data_path]
-            )
+            cached_pointer_data = pointer_data_cache[pointer_data_path]
+
+            if visualize_attention_3d:
+                from visualize_attention import run_models_with_attention
+                attn_result = run_models_with_attention(
+                    model=model,
+                    processor=processor,
+                    pointer_data=cached_pointer_data,
+                    query=query,
+                    max_new_tokens=128,
+                )
+                attn_result["attention_matrix"][:, 0:300] = 0  # removal of attention sink token
+                generated_response = attn_result["generated_text"]
+
+                # Build attention_data and launch 3D visualization
+                if '_point3r_outputs' in cached_pointer_data:
+                    ptr_pos = cached_pointer_data['pointer_positions'].numpy() if torch.is_tensor(cached_pointer_data['pointer_positions']) else cached_pointer_data['pointer_positions']
+                    ptr_ts = cached_pointer_data.get('pointer_timestamps', None)
+                    if ptr_ts is not None:
+                        ptr_ts = ptr_ts.numpy() if torch.is_tensor(ptr_ts) else ptr_ts
+                    else:
+                        ptr_ts = np.zeros(len(ptr_pos))
+
+                    attn_matrix = attn_result["attention_matrix"]
+                    attn_matrix[:, 50:150] = 0
+
+                    attention_data = {
+                        "attention_matrix": attn_matrix,
+                        "generated_tokens_text": attn_result["generated_tokens_text"],
+                        "pointer_positions": ptr_pos,
+                        "pointer_timestamps": ptr_ts,
+                    }
+                    visualize_point3r_viser(
+                        cached_pointer_data,
+                        attention_data=attention_data,
+                        point_stride=1
+                    )
+                else:
+                    print("WARNING: pointer_data missing '_point3r_outputs', skipping 3D attention visualization")
+            else:
+                generated_response = run_models(
+                    model=model,
+                    processor=processor,
+                    pointer_data_path=pointer_data_path,
+                    query=query,
+                    pointer_data=cached_pointer_data
+                )
 
             # Display results
             print(f"\n{'='*70}")
@@ -1168,23 +1247,25 @@ if __name__=='__main__':
 
     # # Example 2: Run scan2cap with fine-tuned checkpoint
     # run_scan2cap(
+    #     model_path="outputs/scan2cap_point3r_Qwen3VL_memfeat",
     #     scan2cap_annotation_path="data/demo_data/scan2cap_debug_32frames_point3r.json",
     #     output_path="data/demo_data/scan2cap_val_output.json",
     #     auto_preprocess=True,
-    #     use_viser=True
+    #     use_viser=True,
+    #     visualize_attention_3d=True,
     #     # model_path="outputs/scan2cap_point3r_all_frames",
     # )
 
     # Example 3: Preprocess images and run inference (original demo)
     # input_images_dir = "./data/demo_data/sample_data"
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
-    scene_id = "scene0706_00"
-    sample_ct = 32
+    scene_id = "scene0011_00"
+    sample_ct = 128
     pointer_format = "video"
     use_merge = True
     postfix = "_compact" if use_merge else ""
     input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
-    pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}_256.pt"
+    pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}_32.pt"
 
     # scene_id = "ac48a9b736"
     # sample_ct = 32
@@ -1195,16 +1276,16 @@ if __name__=='__main__':
     # input_images_dir = f"./data/demo_data/scannetpp_{scene_id}"
     # pointer_data_path = f"./data/demo_data/scannetpp_{scene_id}.pt"
 
-    # sample_ct = 32
-    # pointer_format = "video"
-    # use_merge = False
-    # input_images_dir = ""
-    # input_video_path = "data/demo_data/robofac_demo.mp4"
-    # pointer_data_path = f"./data/demo_data/robofac_demo.pt"
+    # # sample_ct = 32
+    # # pointer_format = "video"
+    # # use_merge = False
+    # # input_images_dir = ""
+    # # input_video_path = "data/demo_data/robofac_demo.mp4"
+    # # pointer_data_path = f"./data/demo_data/robofac_demo.pt"
 
-    # query = "Describe this image."
-    query = "What is the task? Did the robot succeeded to do the task? If failed, analyze the reason."
-    model_path="Qwen/Qwen3-VL-4B-Instruct"
+    query = "Describe this scene."
+    # query = "What is the task? Did the robot succeeded to do the task? If failed, analyze the reason."
+    model_path="outputs/scan2cap_point3r_Qwen3VL_memfeat"
     use_viser = True
     model, processor, min_pixels, max_pixels, point3r_model = load_models(
         model_path=model_path, pointer_format=pointer_format, use_merge=use_merge
@@ -1212,9 +1293,10 @@ if __name__=='__main__':
     with torch.inference_mode():
         if input_images_dir:
             preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                        input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None, 
-                        image_extensions = ("*.jpg",))
+                        input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None,
+                        image_extensions = ("*.jpg",), save_point3r_outputs=True)
         else:
             preprocess_video(model, processor, min_pixels, max_pixels, point3r_model,
-                        input_video_path, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None)
-    # run_models(model, processor, pointer_data_path, query)
+                        input_video_path, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None,
+                        save_point3r_outputs=True)
+    run_models(model, processor, pointer_data_path, query)

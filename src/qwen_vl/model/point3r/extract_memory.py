@@ -317,8 +317,8 @@ def visualize_point3r_viser(
             gui_frustum_scale = server.gui.add_slider("Frustum Scale", min=0.01, max=0.2, step=0.01, initial_value=0.05)
             if has_confidence:
                 gui_conf_threshold = server.gui.add_slider(
-                    "Confidence Threshold", min=conf_min, max=conf_max,
-                    step=(conf_max - conf_min) / 100.0, initial_value=1.10
+                    "Confidence Threshold", min=0.9, max=conf_max,
+                    step=(conf_max - 0.9) / 100.0, initial_value=1.10
                 )
 
         if attention_data is not None and attn_assignments is not None:
@@ -858,6 +858,7 @@ def extract_pointer_memory(
     lambda_decay=1.0,
     max_memory_tokens=None,
     frames_indices=None,
+    save_point3r_outputs=False,
 ):
     """
     Extract pointer memory from image inputs using Point3R model.
@@ -1090,8 +1091,10 @@ def extract_pointer_memory(
     result = {
         'pointer_memory_embeds': pointer_memory_embeds,
         'pointer_positions': pointer_positions,
-        '_point3r_outputs': outputs,
     }
+
+    if save_point3r_outputs:
+        result['_point3r_outputs'] = outputs
 
     # Add memory_feat if available
     if memory_feat is not None:

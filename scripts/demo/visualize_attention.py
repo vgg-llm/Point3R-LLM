@@ -105,8 +105,7 @@ def run_models_with_attention(
     print(f"Input length: {input_len}")
     print(f"Pointer tokens: {len(pointer_indices)}")
     print(f"Generating up to {max_new_tokens} tokens...")
-    print(pointer_indices[:10], pointer_indices[-10:],)
-    input_decoded = processor.tokenizer.decode(input_ids, skip_special_tokens=False)
+    input_decoded = processor.tokenizer.decode(input_ids, skip_special_tokens=True)
     print(input_decoded)
 
     # Generate with attention output
