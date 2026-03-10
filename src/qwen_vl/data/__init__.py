@@ -135,6 +135,12 @@ ROBOFAC = {
     "tag": "2d"
 }
 
+SCANREFER_POINT3R = {
+    "annotation_path": "data/train/scanrefer_train_32frames_point3r.json",
+    "data_path": "data/media",
+    "tag": "3d"
+}
+
 ROBOFAC_POINT3R = {
     "annotation_path": "data/train/robofac_training_qa_point3r.json",
     "data_path": "data/media",
@@ -164,6 +170,7 @@ data_dict = {
     "vstibench_point3r": VSTIBENCH_POINT3R,
     "spar_subset_point3r": SPAR_SUBSET_POINT3R,
     "vsibench_balanced_point3r": VSIBENCH_BALANCED_POINT3R,
+    "scanrefer_point3r": SCANREFER_POINT3R,
     "robofac": ROBOFAC,
     "robofac_point3r": ROBOFAC_POINT3R,
 }

@@ -30,8 +30,8 @@ def scanrefer_doc_to_visual(doc):
 
 
 def scanrefer_doc_to_text(doc, lmms_eval_specific_kwargs=None):
-    prompt = doc["prompt"]
-    return prompt
+    question = doc["conversations"][0]["value"].replace("<image>", "")
+    return question
 
 
 def scanrefer_process_results(doc, results):
