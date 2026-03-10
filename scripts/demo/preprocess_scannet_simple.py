@@ -45,6 +45,13 @@ def main():
                         help='Output directory name under data/media/scannet/ (default: auto-generated from lambda value)')
     parser.add_argument('--no-merge', action='store_true', default=False,
                         help='Disable spatial merging of memory tokens (use simple concatenation)')
+    parser.add_argument('--merge-threshold', type=float, default=None,
+                        help='Fixed absolute merge threshold in meters. If set, overrides adaptive threshold. '
+                             'Suggested values: 0.05 (fine), 0.15-0.20 (indoor rooms), 0.50 (large scenes). '
+                             'Default: None (adaptive, ~5%% of scene diagonal)')
+    parser.add_argument('--len-unit', type=int, default=20,
+                        help='Number of spatial bins along diagonal for adaptive threshold. '
+                             'Only used when --merge-threshold is not set. Default: 20')
     args = parser.parse_args()
 
     gpu_id = args.gpu_id
@@ -84,7 +91,7 @@ def main():
     print(f"Total scenes in dataset: {total_scenes}")
 
     # Load models - will use CUDA_VISIBLE_DEVICES=X so it sees only one GPU as cuda:0
-    model, processor, min_pixels, max_pixels, point3r_model = load_models(device=None, model_path=args.model_path, use_merge=not args.no_merge)
+    model, processor, min_pixels, max_pixels, point3r_model = load_models(device=None, model_path=args.model_path, use_merge=not args.no_merge, merge_threshold=args.merge_threshold, len_unit=args.len_unit)
 
     # Process this GPU's subset with progress bar
     for input_images_dir, pointer_data_path in tqdm(

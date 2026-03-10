@@ -119,6 +119,8 @@ class Point3RConfig(PretrainedConfig):
         pose_conf_head=False,
         pose_head=False,
         use_merge=True,
+        merge_threshold=None,
+        len_unit=20,
         **croco_kwargs,
     ):
         super().__init__()
@@ -136,6 +138,8 @@ class Point3RConfig(PretrainedConfig):
         self.pose_conf_head = pose_conf_head
         self.pose_head = pose_head
         self.use_merge = use_merge
+        self.merge_threshold = merge_threshold
+        self.len_unit = len_unit
         self.croco_kwargs = croco_kwargs
 
 # thanks to CUT3R (https://github.com/CUT3R)
@@ -876,7 +880,6 @@ class Point3R(CroCoNet):
             num_tokens = memory_add.shape[1]  # (bs, num_tokens, dim)
             memory_aligned_timestamps = torch.zeros(bs, num_tokens, dtype=torch.long, device=memory_add.device)
         else:
-            len_unit = 20
             memory_feat_list = []
             memory_pos_list = []
             # NEW: Track pointer_image_embeds in parallel
@@ -911,9 +914,13 @@ class Point3R(CroCoNet):
                 # NEW: Extract timestamps for batch j
                 timestamps_j = memory_aligned_timestamps[j]
 
-                # Compute adaptive threshold based on point cloud extent
-                unit_j = (torch.cat((memory_pos_j, img_pos_j), dim=0).max(dim=0).values - torch.cat((memory_pos_j, img_pos_j), dim=0).min(dim=0).values) / len_unit
-                threshold_j = torch.norm(unit_j)
+                # Compute threshold based on point cloud extent
+                if self.config.merge_threshold is not None:
+                    threshold_j = self.config.merge_threshold
+                else:
+                    _len_unit = self.config.len_unit
+                    unit_j = (torch.cat((memory_pos_j, img_pos_j), dim=0).max(dim=0).values - torch.cat((memory_pos_j, img_pos_j), dim=0).min(dim=0).values) / _len_unit
+                    threshold_j = torch.norm(unit_j)
                 distances = torch.cdist(img_pos_j, memory_pos_j)
                 min_dists, min_indices = distances.min(dim=-1)
                 mask_add = min_dists >= threshold_j

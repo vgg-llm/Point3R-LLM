@@ -23,7 +23,7 @@ from qwen_vl.model.point3r.extract_memory import extract_pointer_memory, visuali
 from qwen_vl_utils import process_vision_info
 from time import time
 
-def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-Instruct", pointer_format="video", use_merge=True, attn_implementation=None):
+def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-Instruct", pointer_format="video", use_merge=True, attn_implementation=None, merge_threshold=None, len_unit=20):
     """
     Load models for inference.
 
@@ -136,6 +136,8 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
         print("Loading Point3R model...")
         point3r_model = Point3R.from_pretrained("./cache/point3r_512.pth")
         point3r_model.use_merge = use_merge
+        point3r_model.config.merge_threshold = merge_threshold
+        point3r_model.config.len_unit = len_unit
         point3r_model = point3r_model.to("cuda" if device is None else device)
         point3r_model.eval()
 
