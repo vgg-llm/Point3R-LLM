@@ -28,7 +28,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from trainer import replace_qwen2_vl_attention_class
+# from trainer import replace_qwen2_vl_attention_class
 
 from transformers import (
     Qwen2VLForConditionalGeneration,
@@ -145,7 +145,7 @@ def set_model(model_args, model):
         for n, p in model.point3r_model.named_parameters():
             p.requires_grad = False
 
-def train(attn_implementation="flash_attention_2"):
+def train(attn_implementation="sdpa"):
     global local_rank
 
     parser = transformers.HfArgumentParser(
@@ -159,7 +159,111 @@ def train(attn_implementation="flash_attention_2"):
     os.makedirs(training_args.output_dir, exist_ok=True)
 
     print('='*70)
-    if "qwen3" in model_args.model_name_or_path.lower():
+    if "qwen3.5" in model_args.model_name_or_path.lower():
+        if getattr(model_args, "use_pointer_memory", False):
+            from qwen_vl.model.qwen3_5.modeling_qwen3_5_point3r import Qwen3_5ForConditionalGenerationWithPoint3R
+            from qwen_vl.model.qwen3_5.processing_qwen3_5 import Qwen3_5ProcessorWithPoint3R
+            config = AutoConfig.from_pretrained(model_args.model_name_or_path)
+            if hasattr(config, "use_pointer_memory") and config.use_pointer_memory != model_args.use_pointer_memory:
+                raise ValueError(
+                    "The use_pointer_memory in config and model_args are not consistent. "
+                    "Please check the model config."
+                )
+            for k in [
+                "use_pointer_memory",
+                "use_preprocessed_input",
+                "point3r_model_path",
+                "pointer_memory_size",
+                # Memory feature fusion parameters (Point3R)
+                "merge_memory_feat",
+                "memory_fusion_method",
+                "memory_fusion_attention_heads",
+                "memory_fusion_dropout",
+                "memory_fusion_num_layers",
+                "memory_merger_hidden_dim",
+                "memory_merger_type",
+                # Pointer position encoding parameters
+                "use_pointer_position_encoding",
+                "pointer_pos_hidden_dim",
+                # RoPE ablation parameters
+                "rope_mode",
+                "rope_position_range",
+                "tune_rope3d_continuous",
+            ]:
+                setattr(config, k, getattr(model_args, k))
+
+            assert model_args.use_preprocessed_input or model_args.point3r_model_path is not None, \
+                "When use_pointer_memory is True, use_preprocessed_input must be True or point3r_model_path must be set in the config."
+            model = Qwen3_5ForConditionalGenerationWithPoint3R.from_pretrained(
+                pretrained_model_name_or_path=model_args.model_name_or_path,
+                config=config,
+                cache_dir=training_args.cache_dir,
+                attn_implementation=attn_implementation,
+                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                # Don't load Point3R model when using preprocessed inputs
+                point3r_model_path=None if model_args.use_preprocessed_input else model_args.point3r_model_path
+            )
+
+            base_processor = AutoProcessor.from_pretrained(
+                model_args.model_name_or_path,
+                use_fast=True,
+                cache_dir=training_args.cache_dir,
+                min_pixels=data_args.min_pixels,
+                max_pixels=data_args.max_pixels
+            )
+
+            # Create Point3R processor with pointer token support for Qwen3.5
+            processor = Qwen3_5ProcessorWithPoint3R(
+                image_processor=base_processor.image_processor,
+                tokenizer=base_processor.tokenizer,
+                video_processor=base_processor.video_processor if hasattr(base_processor, 'video_processor') else None,
+                chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+                pointer_format=getattr(model_args, "pointer_format", "video"),
+                add_frame_id=getattr(model_args, "add_frame_id", False),
+            )
+
+            # Store pointer token ID in model config for proper processing
+            model.config.pointer_token_id = processor.pointer_token_id
+            model.pointer_token_id = processor.pointer_token_id
+
+            # Resize token embeddings to accommodate new pointer token
+            model.resize_token_embeddings(len(processor.tokenizer))
+
+            data_args.image_processor = processor.image_processor
+
+            # Determine model type based on rope_mode
+            rope_mode = getattr(model_args, "rope_mode", "none")
+            if rope_mode == "discrete":
+                data_args.model_type = "qwen3.5-rope-discrete"
+            elif rope_mode == "continuous":
+                data_args.model_type = "qwen3.5-rope-continuous"
+            elif rope_mode == "pointer_timestamp":
+                data_args.model_type = "qwen3.5-rope-pointer"
+            else:
+                data_args.model_type = "qwen3.5"
+
+            # Pass RoPE config to model
+            model.config.rope_mode = rope_mode
+            model.config.rope_position_range = getattr(model_args, "rope_position_range", 128)
+
+            # Pass pointer format to data pipeline
+            data_args.pointer_format = getattr(model_args, "pointer_format", "video")
+            data_args.pointer_dir_name = getattr(model_args, "pointer_dir_name", None)
+            data_args.add_frame_id = getattr(model_args, "add_frame_id", False)
+        else:
+            from transformers import Qwen3_5ForConditionalGeneration
+            model = Qwen3_5ForConditionalGeneration.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                attn_implementation=attn_implementation,
+                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+            )
+            data_args.image_processor = AutoProcessor.from_pretrained(
+                model_args.model_name_or_path
+                ).image_processor
+            data_args.model_type = "qwen3.5"
+
+    elif "qwen3" in model_args.model_name_or_path.lower():
         if getattr(model_args, "use_pointer_memory", False):
             from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
             from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
@@ -459,7 +563,8 @@ def train(attn_implementation="flash_attention_2"):
         data_args.model_type = "qwen2vl"
 
     if data_args.data_flatten:
-        replace_qwen2_vl_attention_class()
+        pass
+        # replace_qwen2_vl_attention_class()
     model.config.use_cache = False
 
     if training_args.gradient_checkpointing:
@@ -542,4 +647,4 @@ def train(attn_implementation="flash_attention_2"):
 
 
 if __name__ == "__main__":
-    train(attn_implementation="flash_attention_2")
+    train(attn_implementation="sdpa")

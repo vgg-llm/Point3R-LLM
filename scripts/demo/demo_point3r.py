@@ -46,7 +46,40 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
     print("="*70)
     stage0_start = time()
 
-    if 'Qwen3-VL' in model_path or 'Qwen3VL' in model_path:
+    if 'Qwen3.5' in model_path or 'Qwen3_5' in model_path:
+        from qwen_vl.model.qwen3_5.modeling_qwen3_5_point3r import Qwen3_5ForConditionalGenerationWithPoint3R
+        from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
+        # Load model with memory-efficient settings
+        print(f"Loading model from: {model_path}")
+        extra_kwargs = {}
+        if attn_implementation is not None:
+            extra_kwargs["attn_implementation"] = attn_implementation
+        model = Qwen3_5ForConditionalGenerationWithPoint3R.from_pretrained(
+            model_path,
+            cache_dir="./cache",
+            torch_dtype=torch.bfloat16,
+            device_map="auto" if device is None else device,
+            low_cpu_mem_usage=True,
+            **extra_kwargs,
+        )
+
+        # Load the base processor first
+        print("Loading processor...")
+        min_pixels = 192 * 32 * 32
+        max_pixels = 192 * 32 * 32
+        base_processor = AutoProcessor.from_pretrained(
+            model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
+        )
+
+        # Reuse Qwen3VLProcessorWithPoint3R — Qwen3.5 shares the same vision token vocabulary
+        processor = Qwen3VLProcessorWithPoint3R(
+            image_processor=base_processor.image_processor,
+            tokenizer=base_processor.tokenizer,
+            video_processor=base_processor.video_processor,
+            chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
+            pointer_format=pointer_format,
+        )
+    elif 'Qwen3-VL' in model_path or 'Qwen3VL' in model_path:
         from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
         from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
         # Load model with memory-efficient settings
@@ -291,21 +324,25 @@ def preprocess_images(
         processed_batch = processor.image_processor(images=batch_images, min_pixels=min_pixels, max_pixels=max_pixels)
 
         with torch.inference_mode():
-            # Get model device
-            model_device = next(model.visual.parameters()).device
+            # Get model device — Qwen3-VL: model.visual; Qwen3.5: model.model.visual
+            _visual = model.visual if hasattr(model, 'visual') else model.model.visual
+            model_device = next(_visual.parameters()).device
 
             # Move tensors to same device as model (IMPORTANT: reassign the tensor!)
-            pixel_values = processed_batch.pixel_values.type(model.visual.dtype)
+            pixel_values = processed_batch.pixel_values.type(_visual.dtype)
             pixel_values = pixel_values.to(model_device)
             grid_thw = processed_batch.image_grid_thw
 
             # print(f'Batch {i//batch_size + 1}: pixel_values shape = {pixel_values.shape}')
             # print(f'Batch {i//batch_size + 1}: grid_thw = {grid_thw}')
 
-            visual_output = model.visual(pixel_values, grid_thw=grid_thw)
+            visual_output = _visual(pixel_values, grid_thw=grid_thw)
             batch_deepstack_image_embeds = None
             if isinstance(visual_output, tuple):
                 batch_image_embeds, batch_deepstack_image_embeds = visual_output
+            elif hasattr(visual_output, 'pooler_output'):
+                # BaseModelOutputWithPooling (e.g. Qwen3.5)
+                batch_image_embeds = visual_output.pooler_output
             else:
                 batch_image_embeds = visual_output
 
@@ -483,16 +520,20 @@ def preprocess_video(
         processed_batch = processor.image_processor(images=batch_images, min_pixels=min_pixels, max_pixels=max_pixels)
 
         with torch.inference_mode():
-            model_device = next(model.visual.parameters()).device
+            _visual = model.visual if hasattr(model, 'visual') else model.model.visual
+            model_device = next(_visual.parameters()).device
 
-            pixel_values = processed_batch.pixel_values.type(model.visual.dtype)
+            pixel_values = processed_batch.pixel_values.type(_visual.dtype)
             pixel_values = pixel_values.to(model_device)
             grid_thw = processed_batch.image_grid_thw
 
-            visual_output = model.visual(pixel_values, grid_thw=grid_thw)
+            visual_output = _visual(pixel_values, grid_thw=grid_thw)
             batch_deepstack_image_embeds = None
             if isinstance(visual_output, tuple):
                 batch_image_embeds, batch_deepstack_image_embeds = visual_output
+            elif hasattr(visual_output, 'pooler_output'):
+                # BaseModelOutputWithPooling (e.g. Qwen3.5)
+                batch_image_embeds = visual_output.pooler_output
             else:
                 batch_image_embeds = visual_output
 
@@ -641,20 +682,21 @@ def run_models(model,
     if 'pointer_timestamps' in pointer_data:
         pointer_timestamps = pointer_data['pointer_timestamps'].to(model.device)
         
-    # Debug hook to capture rope index
-    _original_get_rope_index = model.get_rope_index
+    # Debug hook to capture rope index (only for models that expose get_rope_index)
+    if hasattr(model, 'get_rope_index'):
+        _original_get_rope_index = model.get_rope_index
 
-    def _debug_get_rope_index(*args, **kwargs):
-        position_ids, rope_deltas = _original_get_rope_index(*args, **kwargs)
-        print(f"\n[DEBUG RoPE] position_ids shape: {position_ids.shape}")
-        print(f"[DEBUG RoPE] rope_deltas: {rope_deltas}")
-        print(f"[DEBUG RoPE] position_ids range per dim:")
-        for d in range(position_ids.shape[0]):
-            vals = position_ids[d, 0]
-        # Save for inspection
-        return position_ids, rope_deltas
+        def _debug_get_rope_index(*args, **kwargs):
+            position_ids, rope_deltas = _original_get_rope_index(*args, **kwargs)
+            print(f"\n[DEBUG RoPE] position_ids shape: {position_ids.shape}")
+            print(f"[DEBUG RoPE] rope_deltas: {rope_deltas}")
+            print(f"[DEBUG RoPE] position_ids range per dim:")
+            for d in range(position_ids.shape[0]):
+                vals = position_ids[d, 0]
+            # Save for inspection
+            return position_ids, rope_deltas
 
-    model.get_rope_index = _debug_get_rope_index
+        model.get_rope_index = _debug_get_rope_index
 
     # Generate with pointer memory
     with torch.inference_mode():
@@ -1180,13 +1222,13 @@ if __name__=='__main__':
     # Example 3: Preprocess images and run inference (original demo)
     # input_images_dir = "./data/demo_data/sample_data"
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
-    # scene_id = "scene0000_00"
-    # sample_ct = 32
-    # pointer_format = "video"
-    # use_merge = True
-    # postfix = "_compact" if use_merge else ""
-    # input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
-    # pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}.pt"
+    scene_id = "scene0000_00"
+    sample_ct = 32
+    pointer_format = "video"
+    use_merge = True
+    postfix = "_compact" if use_merge else ""
+    input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
+    pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}.pt"
 
     # scene_id = "ac48a9b736"
     # sample_ct = 32
@@ -1197,16 +1239,17 @@ if __name__=='__main__':
     # input_images_dir = f"./data/demo_data/scannetpp_{scene_id}"
     # pointer_data_path = f"./data/demo_data/scannetpp_{scene_id}.pt"
 
-    sample_ct = 32
-    pointer_format = "video"
-    use_merge = False
-    input_images_dir = ""
-    input_video_path = "data/demo_data/robofac_demo.mp4"
-    pointer_data_path = f"./data/demo_data/robofac_demo.pt"
+    # sample_ct = 32
+    # pointer_format = "video"
+    # use_merge = False
+    # input_images_dir = ""
+    # input_video_path = "data/demo_data/robofac_demo.mp4"
+    # pointer_data_path = f"./data/demo_data/robofac_demo.pt"
 
     # query = "Describe this image."
-    query = "What is the task? Did the robot succeeded to do the task? If failed, analyze the reason."
-    model_path="Qwen/Qwen3-VL-4B-Instruct"
+    query = "Describe the scene with the spatial layout."
+    # model_path="Qwen/Qwen3-VL-4B-Instruct"
+    model_path="Qwen/Qwen3.5-4B"
     use_viser = True
     model, processor, min_pixels, max_pixels, point3r_model = load_models(
         model_path=model_path, pointer_format=pointer_format, use_merge=use_merge

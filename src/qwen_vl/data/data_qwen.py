@@ -22,7 +22,7 @@ from decord import VideoReader
 import transformers
 
 from . import data_list
-from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2, get_rope_index_qwen3vl, get_rope_index_qwen3vl_discrete, get_rope_index_qwen3vl_pointer
+from .rope2d import get_rope_index_txyz, get_rope_index_25, get_rope_index_2, get_rope_index_qwen3vl, get_rope_index_qwen3vl_discrete, get_rope_index_qwen3vl_pointer, get_rope_index_qwen3_5, get_rope_index_qwen3_5_pointer
 from .utils import prepare_image_inputs
 from .pointer_data import load_pointer_data, expand_pointer_tokens, expand_pointer_tokens_grouped
 
@@ -79,7 +79,8 @@ def preprocess_qwen_2_visual(
         input_id, target = [], []
 
         input_id += tokenizer.apply_chat_template(
-            [{"role": "system", "content": system_message}]
+            [{"role": "system", "content": system_message}],
+            return_dict=False,
         )
         target += [IGNORE_INDEX] * len(input_id)
 
@@ -111,7 +112,7 @@ def preprocess_qwen_2_visual(
                     content = "".join(new_parts)
 
             conv = [{"role": role, "content": content}]
-            encode_id = tokenizer.apply_chat_template(conv)
+            encode_id = tokenizer.apply_chat_template(conv, return_dict=False)
             input_id += encode_id
             if role in ["user", "system"]:
                 target += [IGNORE_INDEX] * len(encode_id)
@@ -163,6 +164,18 @@ class LazySupervisedDataset(Dataset):
         elif data_args.model_type == "qwen3vl-spatial":
             # Backward compatibility: use discrete RoPE for spatial
             self.get_rope_index = get_rope_index_qwen3vl_discrete
+        elif data_args.model_type in ("qwen3.5", "qwen3.5vl"):
+            self.get_rope_index = get_rope_index_qwen3_5
+        elif data_args.model_type in ("qwen3.5-rope-continuous", "qwen3.5vl-rope-continuous"):
+            # Continuous RoPE applied in model forward; use base for data-side
+            self.get_rope_index = get_rope_index_qwen3_5
+        elif data_args.model_type in ("qwen3.5-rope-discrete", "qwen3.5vl-rope-discrete", "qwen3.5-spatial", "qwen3.5vl-spatial"):
+            # Qwen3.5 has 3D MRoPE; discrete spatial positions encoded in H/W dims
+            self.get_rope_index = get_rope_index_qwen3_5
+        elif data_args.model_type in ("qwen3.5-rope-pointer", "qwen3.5vl-rope-pointer"):
+            import functools
+            _ptr_tok_id = getattr(data_args, "pointer_token_id", None)
+            self.get_rope_index = functools.partial(get_rope_index_qwen3_5_pointer, pointer_token_id=_ptr_tok_id)
         elif data_args.model_type == "qwen2.5vl-spatial":
             self.get_rope_index = get_rope_index_txyz
         elif data_args.model_type == "qwen2.5vl":
@@ -546,8 +559,11 @@ class LazySupervisedDataset(Dataset):
                 target = []
 
                 # Add system message
+                # NOTE: return_dict=False needed for transformers 5.x which returns
+                # BatchEncoding by default instead of plain list
                 input_id += tokenizer_copy.apply_chat_template(
-                    [{"role": "system", "content": system_message}]
+                    [{"role": "system", "content": system_message}],
+                    return_dict=False,
                 )
                 target += [IGNORE_INDEX] * len(input_id)
 
@@ -570,7 +586,7 @@ class LazySupervisedDataset(Dataset):
 
                     # Tokenize the expanded content
                     conv_formatted = [{"role": role, "content": content}]
-                    encode_id = tokenizer_copy.apply_chat_template(conv_formatted)
+                    encode_id = tokenizer_copy.apply_chat_template(conv_formatted, return_dict=False)
                     input_id += encode_id
 
                     if role in ["user", "system"]:

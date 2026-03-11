@@ -400,3 +400,9 @@ Qwen2_5_VisionTransformerPretrainedModel.print_trainable_parameters = (
     print_trainable_parameters_visual
 )
 Qwen2_5_VLModel.print_trainable_parameters = print_trainable_parameters
+
+
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel, Qwen3_5TextModel
+Qwen3_5VisionModel.print_trainable_parameters = print_trainable_parameters_visual
+# Qwen3_5TextModel has layers/embed_tokens (not Qwen3_5Model which wraps visual+language)
+Qwen3_5TextModel.print_trainable_parameters = print_trainable_parameters

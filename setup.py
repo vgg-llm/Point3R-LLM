@@ -7,9 +7,9 @@ setup(
     packages=find_packages("src"),
     package_dir={"": "src"},
     install_requires=[
-        "torch==2.5.1",
-        "torchvision==0.20.1",
-        "transformers==4.57.6",  # transformers-4.57.0 is required for Qwen3-VL, but it is not compatible with 4.50.0.
+        "torch==2.6.0",
+        "torchvision==0.21.0",
+        "transformers==5.3.0",  # transformers-4.57.0 is required for Qwen3-VL, but it is not compatible with 4.50.0.
         "deepspeed==0.16.4",
         "flash_attn==2.7.4.post1",
         "triton==3.1.0",
@@ -66,6 +66,8 @@ setup(
         "terminaltables",
         "viser",
         "natsort",
+        "causal_conv1d==1.6.1",
+        "flash-linear-attention",
     ],
     author="Duo Zheng, Shijia Huang, Yanyang Li, Liwei Wang",
     author_email="dzheng23@link.cuhk.edu.hk",
