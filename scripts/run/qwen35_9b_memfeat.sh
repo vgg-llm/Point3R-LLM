@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=scan2cap_point3r_Qwen35VL_4b_memfeat
-#SBATCH -o sbatch_log/scan2cap_point3r_Qwen35VL_4b_memfeat.%j.out
+#SBATCH --job-name=scan2cap_point3r_Qwen35VL_9b_memfeat
+#SBATCH -o sbatch_log/scan2cap_point3r_Qwen35VL_9b_memfeat.%j.out
 #SBATCH --partition=cms_cvlab
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1
@@ -9,7 +9,7 @@
 
 source venv2/bin/activate
 
-export EXP_NAME="scan2cap_point3r_Qwen35VL_4b_memfeat"
+export EXP_NAME="scan2cap_point3r_Qwen35VL_9b_memfeat"
 export MODEL_PATH="Qwen/Qwen3.5-9B"
 export DATASETS="scan2cap_point3r"
 
