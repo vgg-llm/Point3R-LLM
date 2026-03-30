@@ -1,0 +1,27 @@
+dataset_path: data/evaluation/multi3drefer_point3r
+dataset_kwargs:
+  token: True
+task: "multi3drefer_point3r"
+test_split: val
+output_type: generate_until
+doc_to_visual: !function utils.multi3drefer_doc_to_visual
+doc_to_text: !function utils.multi3drefer_doc_to_text
+doc_to_target: "answer"
+generation_kwargs:
+  max_new_tokens: 200
+  temperature: 0
+  top_p: 1.0
+  num_beams: 1
+  do_sample: false
+# The return value of process_results will be used by metrics
+process_results: !function utils.multi3drefer_process_results
+metric_list:
+  - metric: multi3drefer_score
+    aggregation: !function utils.multi3drefer_aggregate_results
+    higher_is_better: true
+lmms_eval_specific_kwargs:
+  default:
+    pre_prompt: ""
+metadata:
+  media_dir: data/media/
+  version: 0.0

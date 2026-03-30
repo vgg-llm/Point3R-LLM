@@ -147,6 +147,12 @@ ROBOFAC_POINT3R = {
     "tag": "2d"
 }
 
+MULTI3DREFER_POINT3R = {
+    "annotation_path": "data/train/multi3drefer_train_32frames_point3r.json",
+    "data_path": "data/media",
+    "tag": "3d"
+}
+
 data_dict = {
     "cambrian_737k": CAMBRIAN_737K,
     "mp_doc": MP_DOC,
@@ -173,6 +179,7 @@ data_dict = {
     "scanrefer_point3r": SCANREFER_POINT3R,
     "robofac": ROBOFAC,
     "robofac_point3r": ROBOFAC_POINT3R,
+    "multi3drefer_point3r": MULTI3DREFER_POINT3R,
 }
 
 

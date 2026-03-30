@@ -1259,13 +1259,14 @@ if __name__=='__main__':
     # Example 3: Preprocess images and run inference (original demo)
     # input_images_dir = "./data/demo_data/sample_data"
     # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
-    scene_id = "scene0011_00"
-    sample_ct = 128
-    pointer_format = "video"
-    use_merge = True
-    postfix = "_compact" if use_merge else ""
-    input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
-    pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}_32.pt"
+
+    # scene_id = "scene0011_00"
+    # sample_ct = 128
+    # pointer_format = "video"
+    # use_merge = True
+    # postfix = "_compact" if use_merge else ""
+    # input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
+    # pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}_32.pt"
 
     # scene_id = "ac48a9b736"
     # sample_ct = 32
@@ -1276,16 +1277,16 @@ if __name__=='__main__':
     # input_images_dir = f"./data/demo_data/scannetpp_{scene_id}"
     # pointer_data_path = f"./data/demo_data/scannetpp_{scene_id}.pt"
 
-    # # sample_ct = 32
-    # # pointer_format = "video"
-    # # use_merge = False
-    # # input_images_dir = ""
-    # # input_video_path = "data/demo_data/robofac_demo.mp4"
-    # # pointer_data_path = f"./data/demo_data/robofac_demo.pt"
+    sample_ct = 32
+    pointer_format = "video"
+    use_merge = False
+    input_images_dir = ""
+    input_video_path = "data/demo_data/robofac_demo.mp4"
+    pointer_data_path = f"./data/demo_data/robofac_demo.pt"
 
-    query = "Describe this scene."
-    # query = "What is the task? Did the robot succeeded to do the task? If failed, analyze the reason."
-    model_path="outputs/scan2cap_point3r_Qwen3VL_memfeat"
+    # query = "Describe this scene."
+    query = "What is the task? Did the robot succeeded to do the task? If failed, analyze the reason."
+    model_path="Qwen/Qwen3-VL-4B-Instruct"
     use_viser = True
     model, processor, min_pixels, max_pixels, point3r_model = load_models(
         model_path=model_path, pointer_format=pointer_format, use_merge=use_merge

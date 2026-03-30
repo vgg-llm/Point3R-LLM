@@ -406,6 +406,7 @@ def visualize_point3r_viser(
     frame_color_data: Dict[int, Dict[str, np.ndarray]] = {}  # cached color arrays
     frame_points_data: Dict[int, Dict[str, np.ndarray]] = {}  # cached point arrays (per mode, for hide_unassigned)
     frustum_handles: List[viser.CameraFrustumHandle] = []
+    _recompute_attn_fn = [None]  # holder for deferred reference to recompute_attention_colors
 
     _default_point_size = 0.005
 
@@ -668,11 +669,23 @@ def visualize_point3r_viser(
                         _, attn_m = apply_mask(fd['pts_3d'], _current_attn_colors[0][idx], conf_mask)
                         color_cache['attention'] = attn_m
                         points_cache['attention'] = pts_m
+                    # Carry over attention overlay keys from previous cache if they exist
+                    prev_color = frame_color_data.get(idx, {})
+                    prev_points = frame_points_data.get(idx, {})
+                    for extra_key in ('attention_overlay', 'attention_viridis', 'attention_rgb', 'attention_alpha'):
+                        if extra_key in prev_color:
+                            color_cache[extra_key] = prev_color[extra_key]
+                        if extra_key in prev_points:
+                            points_cache[extra_key] = prev_points[extra_key]
                     frame_color_data[idx] = color_cache
                     frame_points_data[idx] = points_cache
-                    handle.points = points_cache[mode_key]
-                    handle.colors = color_cache[mode_key]
+                    effective_key = mode_key if mode_key in points_cache else 'rgb'
+                    handle.points = points_cache[effective_key]
+                    handle.colors = color_cache[effective_key]
             server.flush()
+            # If in an attention mode, trigger full recomputation with new conf masks
+            if mode_key in ('attention', 'attention_overlay') and _recompute_attn_fn[0] is not None:
+                _recompute_attn_fn[0]()
 
         @gui_point_size.on_update
         def _(_):
@@ -779,6 +792,8 @@ def visualize_point3r_viser(
                             handle.points = vis_pts
                             handle.colors = overlay_colors
                 server.flush()
+
+            _recompute_attn_fn[0] = recompute_attention_colors
 
             @gui_attn_token_slider.on_update
             @debounced(0.1)
