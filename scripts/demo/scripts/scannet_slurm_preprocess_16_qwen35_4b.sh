@@ -25,8 +25,8 @@ echo "Submitting jobs to SLURM queue..."
 for task_id in $(seq 0 $((TOTAL_TASKS - 1))); do
     echo "  - Submitting task $task_id/$((TOTAL_TASKS-1))..."
     sbatch --job-name=scannet_${task_id}_preprocessing_for_Qwen3.5-Point3R-4B \
-           --output=logs/scannet_chunk_${task_id}_${SAMPLE_CT}_frame.log \
-           --error=logs/scannet_chunk_${task_id}_${SAMPLE_CT}_frame.log \
+           --output=logs/scannet_chunk_${task_id}_${SAMPLE_CT}_frame_qwen35_4b.log \
+           --error=logs/scannet_chunk_${task_id}_${SAMPLE_CT}_frame_qwen35_4b.log \
            --partition=cms_cvlab \
            --gres=gpu:1 \
            --nodes=1 \
