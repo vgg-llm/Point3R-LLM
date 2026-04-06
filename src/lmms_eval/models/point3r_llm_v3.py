@@ -519,7 +519,7 @@ class Point3RLLMv3(lmms):
 
                 messages.append(message)
 
-            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
 
             # Prepare inputs
             if self.use_pointer_memory and pointer_data is not None:
@@ -560,6 +560,10 @@ class Point3RLLMv3(lmms):
                 gen_kwargs["top_p"] = None
             if "num_beams" not in gen_kwargs:
                 gen_kwargs["num_beams"] = 1
+            if "presence_penalty" not in gen_kwargs:
+                gen_kwargs["presence_penalty"] = 1.5
+            if "repetition_penalty" not in gen_kwargs:
+                gen_kwargs["repetition_penalty"] = 1.0
 
             pad_token_id = self.tokenizer.pad_token_id
 
@@ -571,6 +575,8 @@ class Point3RLLMv3(lmms):
                 "temperature": gen_kwargs["temperature"],
                 "top_p": gen_kwargs["top_p"],
                 "num_beams": gen_kwargs["num_beams"],
+                "presence_penalty": gen_kwargs["presence_penalty"],
+                "repetition_penalty": gen_kwargs["repetition_penalty"],
                 "max_new_tokens": gen_kwargs["max_new_tokens"],
                 "use_cache": self.use_cache,
             }

@@ -7,7 +7,7 @@
 
 # Experiment: 4B with memory features on Scan2Cap
 
-source venv2/bin/activate 
+# source venv2/bin/activate 
 
 export EXP_NAME="scan2cap_point3r_Qwen35VL_4b_memfeat"
 export MODEL_PATH="Qwen/Qwen3.5-4B"
@@ -18,7 +18,7 @@ export MERGE_MEMORY_FEAT="True"
 export MEMORY_FUSION_METHOD="add"
 export POINTER_DIR_NAME="pointer_memory_qwen35_4b"
 
-# # Smoke test overrides: use 8 GPUs (ZeRO-2 sharding to avoid OOM)
+# Smoke test overrides: use 8 GPUs (ZeRO-2 sharding to avoid OOM)
 # export NPROC_PER_NODE=8
 # export TOTAL_BATCH_SIZE=8
 # export NUM_TRAIN_EPOCHS=1
@@ -31,7 +31,7 @@ export BENCHMARKS="scan2cap_point3r"
 export EVAL_MODEL_TYPE="point3r_llm_v3"
 
 # --- Train ---
-# bash scripts/train/train.sh
+bash scripts/train/train.sh
 
 export NUM_PROCESSES=8
 # export EVAL_LIMIT=10

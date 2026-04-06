@@ -40,7 +40,7 @@ from qwen_vl.train.argument import (
     DataArguments,
     TrainingArguments,
 )
-from transformers import AutoTokenizer, AutoProcessor, Qwen2VLImageProcessor, Trainer, AutoConfig, set_seed, enable_full_determinism, TrainerCallback
+from transformers import AutoTokenizer, AutoProcessor, Qwen2VLImageProcessor, Trainer, AutoConfig, set_seed, enable_full_determinism, TrainerCallback, GenerationConfig
 import gc
 
 local_rank = None
@@ -608,6 +608,13 @@ def train(attn_implementation="sdpa"):
 
     if model_args.use_geometry_encoder:
         setattr(data_args, "use_geometry_encoder", model_args.use_geometry_encoder)
+
+    # Set generation config for instruct (non-thinking) mode
+    model.generation_config = GenerationConfig(
+        presence_penalty=1.5,
+        repetition_penalty=1.0,
+        do_sample=False,
+    )
 
     # Pass processor if using Point3R, otherwise pass None
     processor_to_pass = processor if model_args.use_pointer_memory else None

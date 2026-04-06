@@ -13,6 +13,8 @@ generation_kwargs:
   top_p: 1.0
   num_beams: 1
   do_sample: false
+  presence_penalty: 1.5
+  repetition_penalty: 1.0
 process_results: !function utils.vstibench_process_results
 metric_list:
   - metric: vstibench_score
