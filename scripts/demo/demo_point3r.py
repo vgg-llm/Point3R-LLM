@@ -242,6 +242,49 @@ def sort_scannetpp_frames(image_paths):
     return [num_to_path[n] for n in video_nums]
 
 
+def _extract_visual_embeddings_batched(model, processor, image_inputs, min_pixels, max_pixels, batch_size=2):
+    """Extract image embeddings from the visual encoder in batches.
+    Handles Qwen3-VL (tuple output with deepstack), Qwen3.5 (BaseModelOutputWithPooling), and Qwen2.5-VL (raw tensor).
+    """
+    _visual = model.visual if hasattr(model, 'visual') else model.model.visual
+    model_device = next(_visual.parameters()).device
+    image_embeds_list = []
+    deepstack_image_embeds = []
+    grid_thw_list = []
+
+    for i in range(0, len(image_inputs), batch_size):
+        batch_images = image_inputs[i:i+batch_size]
+        processed_batch = processor.image_processor(images=batch_images, min_pixels=min_pixels, max_pixels=max_pixels)
+
+        with torch.inference_mode():
+            pixel_values = processed_batch.pixel_values.type(_visual.dtype).to(model_device)
+            grid_thw = processed_batch.image_grid_thw
+
+            visual_output = _visual(pixel_values, grid_thw=grid_thw)
+            batch_deepstack_image_embeds = None
+            if isinstance(visual_output, tuple):
+                batch_image_embeds, batch_deepstack_image_embeds = visual_output
+            elif hasattr(visual_output, 'pooler_output'):
+                batch_image_embeds = visual_output.pooler_output
+            else:
+                batch_image_embeds = visual_output
+
+            image_embeds_list.append(batch_image_embeds)
+            if batch_deepstack_image_embeds is not None:
+                if len(deepstack_image_embeds) == 0:
+                    deepstack_image_embeds = [[] for _ in range(len(batch_deepstack_image_embeds))]
+                for layer_idx, layer_embeds in enumerate(batch_deepstack_image_embeds):
+                    deepstack_image_embeds[layer_idx].append(layer_embeds)
+            grid_thw_list.append(grid_thw)
+
+    image_embeds = torch.cat(image_embeds_list, dim=0)
+    grid_thw = torch.cat(grid_thw_list, dim=0)
+    if deepstack_image_embeds:
+        deepstack_image_embeds = [torch.cat(layer_embeds_list, dim=0) for layer_embeds_list in deepstack_image_embeds]
+
+    return image_embeds, grid_thw, deepstack_image_embeds
+
+
 def preprocess_images(
         model,
         processor,
@@ -311,65 +354,9 @@ def preprocess_images(
     print("Extracting image info from images...")
     image_inputs, video_inputs, video_kwargs = process_vision_info(vision_message, image_patch_size=32, return_video_kwargs=True, return_video_metadata=True)
 
-    # Process images in batches
-    batch_size = 2  # Adjust based on available GPU memory
-    image_embeds_list = []
-    deepstack_image_embeds = []  # List of lists: [[layer0_batch0, layer0_batch1, ...], [layer1_batch0, ...], ...]
-    grid_thw_list = []
-
-    for i in range(0, len(image_inputs), batch_size):
-        batch_images = image_inputs[i:i+batch_size]
-
-        # Process batch
-        processed_batch = processor.image_processor(images=batch_images, min_pixels=min_pixels, max_pixels=max_pixels)
-
-        with torch.inference_mode():
-            # Get model device — Qwen3-VL: model.visual; Qwen3.5: model.model.visual
-            _visual = model.visual if hasattr(model, 'visual') else model.model.visual
-            model_device = next(_visual.parameters()).device
-
-            # Move tensors to same device as model (IMPORTANT: reassign the tensor!)
-            pixel_values = processed_batch.pixel_values.type(_visual.dtype)
-            pixel_values = pixel_values.to(model_device)
-            grid_thw = processed_batch.image_grid_thw
-
-            # print(f'Batch {i//batch_size + 1}: pixel_values shape = {pixel_values.shape}')
-            # print(f'Batch {i//batch_size + 1}: grid_thw = {grid_thw}')
-
-            visual_output = _visual(pixel_values, grid_thw=grid_thw)
-            batch_deepstack_image_embeds = None
-            if isinstance(visual_output, tuple):
-                batch_image_embeds, batch_deepstack_image_embeds = visual_output
-            elif hasattr(visual_output, 'pooler_output'):
-                # BaseModelOutputWithPooling (e.g. Qwen3.5)
-                batch_image_embeds = visual_output.pooler_output
-            else:
-                batch_image_embeds = visual_output
-
-            # print(f'Batch {i//batch_size + 1}: image_embeds shape = {batch_embeds.shape}')
-
-            image_embeds_list.append(batch_image_embeds)
-            if batch_deepstack_image_embeds is not None:
-                # Initialize list structure on first batch
-                if len(deepstack_image_embeds) == 0:
-                    deepstack_image_embeds = [[] for _ in range(len(batch_deepstack_image_embeds))]
-                # Append each layer's embeddings to corresponding list
-                for layer_idx, layer_embeds in enumerate(batch_deepstack_image_embeds):
-                    deepstack_image_embeds[layer_idx].append(layer_embeds)
-            grid_thw_list.append(grid_thw)
-
-    # Concatenate all batches to build equivalent image_embeds
-    image_embeds = torch.cat(image_embeds_list, dim=0)
-    grid_thw = torch.cat(grid_thw_list, dim=0)
-
-    # Concatenate deepstack embeddings for each layer
-    if deepstack_image_embeds:
-        deepstack_image_embeds = [
-            torch.cat(layer_embeds_list, dim=0) for layer_embeds_list in deepstack_image_embeds
-        ]
-
-    # print(f'Final concatenated image_embeds shape = {image_embeds.shape}')
-    # print(f'Final concatenated grid_thw = {grid_thw}')
+    image_embeds, grid_thw, deepstack_image_embeds = _extract_visual_embeddings_batched(
+        model, processor, image_inputs, min_pixels, max_pixels
+    )
 
     print("Extracting pointer memory from image...")
 
@@ -508,51 +495,9 @@ def preprocess_video(
     print(f"Loaded {len(image_inputs)} frames from {input_video_path}")
     print(f"video_metadata: {video_metadata}")
 
-    # Process frames in batches (same as preprocess_images)
-    batch_size = 2
-    image_embeds_list = []
-    deepstack_image_embeds = []
-    grid_thw_list = []
-
-    for i in range(0, len(image_inputs), batch_size):
-        batch_images = image_inputs[i:i+batch_size]
-
-        processed_batch = processor.image_processor(images=batch_images, min_pixels=min_pixels, max_pixels=max_pixels)
-
-        with torch.inference_mode():
-            _visual = model.visual if hasattr(model, 'visual') else model.model.visual
-            model_device = next(_visual.parameters()).device
-
-            pixel_values = processed_batch.pixel_values.type(_visual.dtype)
-            pixel_values = pixel_values.to(model_device)
-            grid_thw = processed_batch.image_grid_thw
-
-            visual_output = _visual(pixel_values, grid_thw=grid_thw)
-            batch_deepstack_image_embeds = None
-            if isinstance(visual_output, tuple):
-                batch_image_embeds, batch_deepstack_image_embeds = visual_output
-            elif hasattr(visual_output, 'pooler_output'):
-                # BaseModelOutputWithPooling (e.g. Qwen3.5)
-                batch_image_embeds = visual_output.pooler_output
-            else:
-                batch_image_embeds = visual_output
-
-            image_embeds_list.append(batch_image_embeds)
-            if batch_deepstack_image_embeds is not None:
-                if len(deepstack_image_embeds) == 0:
-                    deepstack_image_embeds = [[] for _ in range(len(batch_deepstack_image_embeds))]
-                for layer_idx, layer_embeds in enumerate(batch_deepstack_image_embeds):
-                    deepstack_image_embeds[layer_idx].append(layer_embeds)
-            grid_thw_list.append(grid_thw)
-
-    # Concatenate all batches
-    image_embeds = torch.cat(image_embeds_list, dim=0)
-    grid_thw = torch.cat(grid_thw_list, dim=0)
-
-    if deepstack_image_embeds:
-        deepstack_image_embeds = [
-            torch.cat(layer_embeds_list, dim=0) for layer_embeds_list in deepstack_image_embeds
-        ]
+    image_embeds, grid_thw, deepstack_image_embeds = _extract_visual_embeddings_batched(
+        model, processor, image_inputs, min_pixels, max_pixels
+    )
 
     print("Extracting pointer memory from video frames...")
 
@@ -625,7 +570,8 @@ def run_models(model,
         processor,
         pointer_data_path = "./data/demo_data/pointer_data.pt",
         query = "Describe this scene.",
-        pointer_data = None
+        pointer_data = None,
+        enable_thinking = False,
     ):
 
     # Load pointer data from file if not provided
@@ -654,7 +600,7 @@ def run_models(model,
 
     # Create message with pointer token
     print("\nGenerating response with pointer memory...")
-    text_pointer = processor.apply_chat_template(messages_with_pointer, tokenize=False, add_generation_prompt=True)
+    text_pointer = processor.apply_chat_template(messages_with_pointer, tokenize=False, add_generation_prompt=True, enable_thinking=enable_thinking)
     inputs_pointer = processor(
         text=[text_pointer],
         pointer_timestamps=pointer_data['pointer_timestamps'],

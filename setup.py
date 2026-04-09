@@ -1,5 +1,9 @@
-import os
 from setuptools import setup, find_packages
+
+try:
+    _long_description = open("README.md").read()
+except FileNotFoundError:
+    _long_description = ""
 
 setup(
     name="cog3dmap",
@@ -7,7 +11,7 @@ setup(
     packages=find_packages("src"),
     package_dir={"": "src"},
     install_requires=[
-        "transformers==5.3.0",  # transformers-4.57.0 is required for Qwen3-VL, but it is not compatible with 4.50.0.
+        "transformers==5.3.0",
         "deepspeed==0.16.4",
         "flash_attn==2.7.4.post1",
         "triton==3.1.0",
@@ -70,7 +74,7 @@ setup(
     author="Chanyoung Gwak*, Yoonwoo Jeong*, Byungwoo Jeon, Hyunseok Lee, Jinwoo Shin, Minsu Cho",
     author_email="gwakcy@postech.ac.kr",
     description="Official PyTorch implementation for \"Cog3DMap: Multi-View Vision-Language Reasoning with 3D Cognitive Maps\"",
-    long_description=open("README.md").read() if os.path.exists("README.md") else "",
+    long_description=_long_description,
     long_description_content_type="text/markdown",
     classifiers=[
         "Programming Language :: Python :: 3",

@@ -329,11 +329,7 @@ class Point3RLLMv3(lmms):
         raise NotImplementedError("Loglikelihood is not implemented for Point3R-LLM v3")
 
     def flatten(self, input):
-        new_list = []
-        for i in input:
-            for j in i:
-                new_list.append(j)
-        return new_list
+        return [item for sublist in input for item in sublist]
 
     def extract_pointer_memory_from_images(self, image_inputs):
         """
@@ -343,6 +339,8 @@ class Point3RLLMv3(lmms):
         if not self.use_pointer_memory or self.point3r_model is None:
             return None
 
+        visual = self.model.model.visual
+        model_device = next(visual.parameters()).device
         image_embeds_list = []
         grid_thw_list = []
 
@@ -356,14 +354,10 @@ class Point3RLLMv3(lmms):
             )
 
             with torch.inference_mode():
-                model_device = next(self.model.model.visual.parameters()).device
-
-                pixel_values = processed_batch.pixel_values.type(self.model.model.visual.dtype)
-                pixel_values = pixel_values.to(model_device)
+                pixel_values = processed_batch.pixel_values.type(visual.dtype).to(model_device)
                 grid_thw = processed_batch.image_grid_thw
 
-                # Qwen3.5 vision returns BaseModelOutputWithPooling (no deepstack)
-                visual_output = self.model.model.visual(pixel_values, grid_thw=grid_thw)
+                visual_output = visual(pixel_values, grid_thw=grid_thw)
                 if hasattr(visual_output, 'pooler_output'):
                     batch_embeds = visual_output.pooler_output
                 else:
