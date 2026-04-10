@@ -36,8 +36,6 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         # Initialize memory feature fusion modules if enabled
         if getattr(config, 'merge_memory_feat', False):
             self._init_memory_fusion(config)
-        elif getattr(config, 'tune_feature_projector', False):
-            self._init_feature_projector(config)
 
         # Initialize pointer position encoder if enabled
         if getattr(config, 'use_pointer_position_encoding', False):
@@ -77,20 +75,6 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         )
         self.point3r_model = Point3R(point3r_config)
         self.point3r_model.eval()
-
-    def _init_feature_projector(self, config):
-        """Initialize feature projector for pointer embeddings (without memory fusion).
-
-        This projector maintains dimensions (no size change) and is used when
-        memory fusion is disabled but feature projection is enabled.
-        """
-        hidden_size = config.text_config.hidden_size
-
-        self.feature_projector = FeatureProjector(
-            input_dim=hidden_size,
-            output_dim=hidden_size,  # Same dimension - no size change
-            hidden_dim=getattr(config, "memory_merger_hidden_dim", 4096),
-        )
 
     def _init_pointer_position_encoder(self, config):
         """Initialize learnable position encoder for pointer memory tokens.
@@ -141,14 +125,6 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
                 self.rope3d_output_projector.weight.data.mul_(0.001)
                 self.rope3d_output_projector.bias.data.zero_()
 
-            # Memory feature projector - small weights for residual learning
-            if hasattr(self, 'memory_feature_projector'):
-                for module in self.memory_feature_projector.modules():
-                    if isinstance(module, nn.Linear):
-                        module.weight.data.mul_(0.001)
-                        if module.bias is not None:
-                            module.bias.data.zero_()
-
             # Memory feature fusion module - custom initialization based on fusion method
             if hasattr(self, 'memory_feature_fusion'):
                 if hasattr(self.memory_feature_fusion, 'fusion_method'):
@@ -197,17 +173,11 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
         This mirrors the pattern used in Qwen2_5_VLForConditionalGenerationWithPoint3R's
         _init_memory_fusion method.
         """
-        # Memory feature dimensions
-        # memory_feat: (num_pointers, 768) from Point3R dec_embed_dim
-        # pointer_memory_embeds: (num_pointers, text_hidden_size) - matches LLM embedding dim
-        memory_dim = 768  # Point3R dec_embed_dim (hardcoded in Point3RConfig)
-        # Use text_config.hidden_size since pointer_memory_embeds is scatter-masked into inputs_embeds
+        memory_dim = 768  # Point3R dec_embed_dim
         output_dim = config.text_config.hidden_size
 
-        # Create feature merger to match dimensions
-        # Note: spatial_merge_size=1 because memory_feat is already token-level (no spatial structure)
         self.memory_feature_projector = FeatureProjector(
-            input_dim=memory_dim,  # 768
+            input_dim=memory_dim,
             output_dim=output_dim,
             hidden_dim=getattr(config, "memory_merger_hidden_dim", 4096),
         )
@@ -440,10 +410,6 @@ class Qwen3VLForConditionalGenerationWithPoint3R(Qwen3VLForConditionalGeneration
             # Fuse with memory_feat if enabled (before masked_scatter)
             if getattr(self.config, 'merge_memory_feat', False) and memory_feat is not None:
                 pointer_memory_embeds = self._process_memory_features(pointer_memory_embeds, memory_feat)
-            # Simple projection without memory fusion
-            elif hasattr(self, 'feature_projector'):
-                pointer_memory_embeds = self.feature_projector(pointer_memory_embeds)
-
             # Apply position encoding if enabled and positions available
             if hasattr(self, 'pointer_position_encoder') and pointer_positions is not None:
                 pointer_memory_embeds = self.pointer_position_encoder(

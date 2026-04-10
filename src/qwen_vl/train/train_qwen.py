@@ -94,17 +94,19 @@ def set_model(model_args, model):
         for n, p in visual_module.merger.named_parameters():
             p.requires_grad = False
 
-    # Feature projector - independent control
-    if hasattr(model, 'feature_projector'):
-        tune_fp = getattr(model_args, 'tune_feature_projector', False)
-        for n, p in model.feature_projector.named_parameters():
-            p.requires_grad = tune_fp
+    # Feature projector - DEPRECATED
+    if getattr(model_args, 'tune_feature_projector', False):
+        raise DeprecationWarning(
+            "tune_feature_projector is no longer supported. "
+            "feature_projector has been removed from the model."
+        )
 
-    # Memory feature merger - independent control
-    if hasattr(model, 'memory_feature_projector'):
-        tune_mfm = getattr(model_args, 'tune_memory_feature_projector', False)
-        for n, p in model.memory_feature_projector.named_parameters():
-            p.requires_grad = tune_mfm
+    # Memory feature projector - DEPRECATED
+    if getattr(model_args, 'tune_memory_feature_projector', False):
+        raise DeprecationWarning(
+            "tune_memory_feature_projector is no longer supported. "
+            "memory_feature_projector has been removed from the model."
+        )
 
     # Memory feature fusion - independent control
     if hasattr(model, 'memory_feature_fusion'):

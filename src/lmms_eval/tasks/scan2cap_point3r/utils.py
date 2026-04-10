@@ -52,12 +52,12 @@ def scan2cap_aggregate_results(results):
 
     from lmms_eval.tasks.scan2cap.caption_eval.bleu.bleu import Bleu
     from lmms_eval.tasks.scan2cap.caption_eval.rouge.rouge import Rouge
-    # from lmms_eval.tasks.scan2cap.caption_eval.meteor.meteor import Meteor  # temporarily removed
+    from lmms_eval.tasks.scan2cap.caption_eval.meteor.meteor import Meteor
     from lmms_eval.tasks.scan2cap.caption_eval.cider.cider import Cider
 
     cider = Cider()
     bleu = Bleu()
-    # meteor = Meteor()  # temporarily removed
+    meteor = Meteor()
     rouge = Rouge()
 
     res, gts = {}, {}
@@ -67,14 +67,14 @@ def scan2cap_aggregate_results(results):
 
     cider_score = cider.compute_score(gts, res)
     bleu_score = bleu.compute_score(gts, res)
-    # meteor_score = meteor.compute_score(gts, res)  # temporarily removed
+    meteor_score = meteor.compute_score(gts, res)
     rouge_score = rouge.compute_score(gts, res)
 
     table_data = [
         ["Metric", "Score"],
         ["CIDER", f"{cider_score[0]*100:.2f}"],
         ["BLEU-4", f"{bleu_score[0][-1]*100:.2f}"],
-        # ["METEOR", f"{meteor_score[0]*100:.2f}"],  # temporarily removed
+        ["METEOR", f"{meteor_score[0]*100:.2f}"],
         ["ROUGE", f"{rouge_score[0]*100:.2f}"],
         ["Data Num", f"{len(res)}"]
     ]

@@ -39,8 +39,6 @@ class Qwen3_5ForConditionalGenerationWithPoint3R(Qwen3_5ForConditionalGeneration
         # Initialize memory feature fusion modules if enabled
         if getattr(config, 'merge_memory_feat', False):
             self._init_memory_fusion(config)
-        elif getattr(config, 'tune_feature_projector', False):
-            self._init_feature_projector(config)
 
         # Initialize pointer position encoder if enabled
         if getattr(config, 'use_pointer_position_encoding', False):
@@ -80,20 +78,6 @@ class Qwen3_5ForConditionalGenerationWithPoint3R(Qwen3_5ForConditionalGeneration
         )
         self.point3r_model = Point3R(point3r_config)
         self.point3r_model.eval()
-
-    def _init_feature_projector(self, config):
-        """Initialize feature projector for pointer embeddings (without memory fusion).
-
-        This projector maintains dimensions (no size change) and is used when
-        memory fusion is disabled but feature projection is enabled.
-        """
-        hidden_size = config.text_config.hidden_size
-
-        self.feature_projector = FeatureProjector(
-            input_dim=hidden_size,
-            output_dim=hidden_size,  # Same dimension - no size change
-            hidden_dim=getattr(config, "memory_merger_hidden_dim", 4096),
-        )
 
     def _init_pointer_position_encoder(self, config):
         """Initialize learnable position encoder for pointer memory tokens.
@@ -135,14 +119,6 @@ class Qwen3_5ForConditionalGenerationWithPoint3R(Qwen3_5ForConditionalGeneration
             if hasattr(self, 'rope3d_output_projector'):
                 self.rope3d_output_projector.weight.data.mul_(0.001)
                 self.rope3d_output_projector.bias.data.zero_()
-
-            # Memory feature projector - small weights for residual learning
-            if hasattr(self, 'memory_feature_projector'):
-                for module in self.memory_feature_projector.modules():
-                    if isinstance(module, nn.Linear):
-                        module.weight.data.mul_(0.001)
-                        if module.bias is not None:
-                            module.bias.data.zero_()
 
             # Memory feature fusion module - custom initialization based on fusion method
             if hasattr(self, 'memory_feature_fusion'):
@@ -215,13 +191,9 @@ class Qwen3_5ForConditionalGenerationWithPoint3R(Qwen3_5ForConditionalGeneration
 
         memory_feat = memory_feat.to(pointer_memory_embeds.dtype)
 
-        num_pointers, memory_dim = memory_feat.shape
-        memory_feat_spatial = memory_feat.view(num_pointers, 1, 1, memory_dim)
+        projected_memory = self.memory_feature_projector(memory_feat)
 
-        merged_memory = self.memory_feature_projector(memory_feat_spatial)
-        merged_memory = merged_memory.view(num_pointers, -1)
-
-        fused_embeds = self.memory_feature_fusion(pointer_memory_embeds, merged_memory)
+        fused_embeds = self.memory_feature_fusion(pointer_memory_embeds, projected_memory)
 
         return fused_embeds
 
@@ -307,9 +279,6 @@ class Qwen3_5ForConditionalGenerationWithPoint3R(Qwen3_5ForConditionalGeneration
             # Fuse with memory_feat if enabled (before masked_scatter)
             if getattr(self.config, 'merge_memory_feat', False) and memory_feat is not None:
                 pointer_memory_embeds = self._process_memory_features(pointer_memory_embeds, memory_feat)
-            # Simple projection without memory fusion
-            elif hasattr(self, 'feature_projector'):
-                pointer_memory_embeds = self.feature_projector(pointer_memory_embeds)
 
             # Apply position encoding if enabled and positions available
             if hasattr(self, 'pointer_position_encoder') and pointer_positions is not None:
