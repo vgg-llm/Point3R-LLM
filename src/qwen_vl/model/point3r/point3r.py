@@ -617,7 +617,6 @@ class Point3R(CroCoNet):
         current_feat,
         current_pos,
         pose_feat,
-        pose_pos,
         point3r_tag=False,
     ):
         new_memory_feat, dec = self._decoder(
@@ -1119,10 +1118,8 @@ class Point3R(CroCoNet):
                     pose_feat_i = self.pose_token.expand(feat_i.shape[0], -1, -1)
                 else:
                     pose_feat_i = self.pose_retriever.inquire(global_img_feat_i, mem)
-                pose_pos_i = None
             else:
                 pose_feat_i = None
-                pose_pos_i = None
 
             new_memory_feat, dec = self._recurrent_rollout(
                 i,
@@ -1132,7 +1129,6 @@ class Point3R(CroCoNet):
                 feat_i,
                 pos_decode_img,
                 pose_feat_i,
-                pose_pos_i,
                 point3r_tag=point3r_tag,
             )
             out_pose_feat_i = dec[-1][:, 0:1]
@@ -1269,10 +1265,8 @@ class Point3R(CroCoNet):
                     pose_feat_i = self.pose_token.expand(feat_i.shape[0], -1, -1)
                 else:
                     pose_feat_i = self.pose_retriever.inquire(global_img_feat_i, mem)
-                pose_pos_i = None
             else:
                 pose_feat_i = None
-                pose_pos_i = None
             new_memory_feat, dec = self._recurrent_rollout(
                 i,
                 mask_memory,
@@ -1281,7 +1275,6 @@ class Point3R(CroCoNet):
                 feat_i,
                 pos_decode_img,
                 pose_feat_i,
-                pose_pos_i,
                 point3r_tag=point3r_tag,
             )
             out_pose_feat_i = dec[-1][:, 0:1]
@@ -1359,5 +1352,221 @@ class Point3R(CroCoNet):
             deepstack_memory_aligned_embeds=deepstack_memory_aligned_embeds,
             memory_aligned_timestamps=memory_aligned_timestamps
         )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Online / VLA inference API
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def init_memory_state(self):
+        """Return an empty MemoryState dict for online (VLA) inference.
+
+        Call once before the frame loop, then pass the returned dict to
+        ``step_online()`` at each step.
+        """
+        return {
+            'memory_feat':                    None,
+            'pos_decode_memory':              None,
+            'mem':                            None,
+            'init_memory_feat':               None,
+            'memory_aligned_image_embeds':    None,
+            'deepstack_memory_aligned_embeds': None,
+            'memory_aligned_timestamps':      None,
+            'frame_idx':                      0,
+        }
+
+    @torch.no_grad()
+    def step_online(
+        self,
+        view,
+        memory_state,
+        image_embeds_i=None,
+        grid_thw_i=None,
+        deepstack_embeds_i=None,
+        max_memory_tokens=512,
+        lambda_decay=1.0,
+    ):
+        """Process ONE new frame and return an updated MemoryState.
+
+        Mirrors a single iteration of ``_forward_merge`` but accepts and
+        returns an explicit state dict, enabling incremental / online
+        inference without disk I/O.  Designed for batch_size=1 (VLA).
+
+        Args:
+            view: dict with ``'img'`` (1,3,H,W), ``'true_shape'`` (1,2),
+                  ``'img_mask'`` (1,) on the target device.
+            memory_state: dict from ``init_memory_state()`` or a previous
+                          ``step_online()`` call.
+            image_embeds_i: (N_patches, embed_dim) Qwen visual embeddings for
+                            this frame, or None.
+            grid_thw_i: (1, 3) grid [T, H, W] before spatial merge, or None.
+            deepstack_embeds_i: list of (N_patches, d_layer) per-layer Qwen
+                                embeddings, or None.
+            max_memory_tokens: hard cap on accumulated memory tokens.
+            lambda_decay: EMA decay for merged Qwen embeddings.
+
+        Returns:
+            new_memory_state (dict) — pass directly to the next call.
+        """
+        i      = memory_state['frame_idx']
+        device = view['img'].device
+
+        # ── 1. Encode single frame ────────────────────────────────────────────
+        shape, feat_ls, pos = self._encode_views([view])
+        feat_i = feat_ls[-1][0]  # (1, N_patches, D)
+        pos_i  = pos[0]          # (1, N_patches, D_pos)
+
+        # ── 2. Interpolate Qwen embeddings to Point3R's 16×16 grid ───────────
+        img_emb_i       = None
+        deepstack_emb_i = None
+        if image_embeds_i is not None and grid_thw_i is not None:
+            img_h, img_w = shape[0][0].tolist()
+            target_shape = (img_h // 16, img_w // 16)
+            img_emb_i = self._interpolate_image_embeds_to_point3r_grid(
+                image_embeds_i, grid_thw_i, target_shape=target_shape
+            )  # (1, target_h*target_w, embed_dim)
+            if deepstack_embeds_i is not None:
+                deepstack_emb_i = [
+                    self._interpolate_image_embeds_to_point3r_grid(
+                        layer_emb, grid_thw_i, target_shape=target_shape
+                    )
+                    for layer_emb in deepstack_embeds_i
+                ]
+
+        # ── 3. Unpack persisted state ─────────────────────────────────────────
+        memory_feat                     = memory_state['memory_feat']
+        pos_decode_memory               = memory_state['pos_decode_memory']
+        mem                             = memory_state['mem']
+        init_memory_feat                = memory_state['init_memory_feat']
+        memory_aligned_image_embeds     = memory_state['memory_aligned_image_embeds']
+        deepstack_memory_aligned_embeds = memory_state['deepstack_memory_aligned_embeds']
+        memory_aligned_timestamps       = memory_state['memory_aligned_timestamps']
+
+        # ── 4. Initialise pose-retriever mem on first frame ───────────────────
+        if mem is None:
+            mem = self.pose_retriever.mem.expand(feat_i.shape[0], -1, -1).clone()
+
+        # ── 5. Initialise spatial memory on first frame ───────────────────────
+        if memory_feat is None:
+            memory_feat, _ = self._init_memory(feat_i, pos_i)
+            init_memory_feat = memory_feat.clone()
+
+        # ── 6. Prepare decoder inputs ─────────────────────────────────────────
+        #   i <  2: memory_feat is a tensor — pass directly, no padding needed.
+        #   i >= 2: memory_feat is a list of per-batch tensors (variable length
+        #           after spatial merging); pad to uniform length for the decoder.
+        merge_tag = (i >= 2)
+        if merge_tag:
+            memory_len_max = max(f.shape[0] for f in memory_feat)
+            f_padded_list, p_padded_list, mask_list = [], [], []
+            for j in range(len(memory_feat)):
+                f_j  = memory_feat[j]
+                p_j  = pos_decode_memory[j]
+                pad  = memory_len_max - f_j.shape[0]
+                f_padded = torch.cat([f_j, torch.zeros(pad, f_j.shape[1], device=device)], dim=0) if pad > 0 else f_j
+                p_padded = torch.cat([p_j, torch.zeros(pad, p_j.shape[1], device=device)], dim=0) if pad > 0 else p_j
+                mask     = torch.cat([torch.ones(f_j.shape[0], device=device),
+                                      torch.zeros(pad, device=device)])
+                f_padded_list.append(f_padded)
+                p_padded_list.append(p_padded)
+                mask_list.append(mask)
+            memory_feat_tensor    = torch.stack(f_padded_list, dim=0)
+            pos_decode_mem_tensor = torch.stack(p_padded_list, dim=0)
+            mask_memory           = torch.stack(mask_list, dim=0)
+        else:
+            memory_feat_tensor    = memory_feat          # tensor
+            pos_decode_mem_tensor = pos_decode_memory    # None (i==0) or tensor (i==1)
+            mask_memory           = None
+
+        # ── 7. Pose retriever ─────────────────────────────────────────────────
+        if self.pose_head_flag:
+            global_img_feat_i = self._get_img_level_feat(feat_i)
+            if i == 0:
+                pose_feat_i = self.pose_token.expand(feat_i.shape[0], -1, -1)
+            else:
+                pose_feat_i = self.pose_retriever.inquire(global_img_feat_i, mem)
+        else:
+            global_img_feat_i = None
+            pose_feat_i       = None
+
+        # ── 8. Decoder rollout ────────────────────────────────────────────────
+        new_memory_feat, dec = self._recurrent_rollout(
+            i, mask_memory, memory_feat_tensor, pos_decode_mem_tensor,
+            feat_i, None, pose_feat_i, point3r_tag=True,
+        )
+
+        # ── 9. Update pose-retriever state ────────────────────────────────────
+        if self.pose_head_flag:
+            out_pose_feat_i = dec[-1][:, 0:1]
+            mem = self.pose_retriever.update_mem(mem, global_img_feat_i, out_pose_feat_i)
+
+        # ── 10. Downstream head → pts3d ───────────────────────────────────────
+        head_input = [
+            dec[0].float(),
+            dec[self.dec_depth * 2 // 4][:, 1:].float(),
+            dec[self.dec_depth * 3 // 4][:, 1:].float(),
+            dec[self.dec_depth].float(),
+        ]
+        res        = self._downstream_head(head_input, shape[0], pos=pos_i)
+        this_pts3d = res['pts3d_in_other_view'].clone().detach()
+
+        # ── 11. Restore list form before _forward_addmemory_merge ────────────
+        #   (must match what the previous call returned)
+        if merge_tag:
+            memory_feat_for_add = []
+            pos_for_add         = []
+            for j in range(mask_memory.shape[0]):
+                m = mask_memory[j].bool()
+                memory_feat_for_add.append(memory_feat_tensor[j][m])
+                pos_for_add.append(pos_decode_mem_tensor[j][m])
+            init_memory_feat = [f.clone().detach() for f in memory_feat_for_add]
+        else:
+            memory_feat_for_add = memory_feat_tensor
+            if pos_decode_memory is not None and isinstance(pos_decode_memory, torch.Tensor):
+                pos_for_add = pos_decode_memory.clone().detach()
+            else:
+                pos_for_add = pos_decode_memory
+
+        # ── 12. Add / merge new frame into persistent memory ──────────────────
+        (
+            memory_feat_new,
+            pos_decode_memory_new,
+            init_memory_feat_new,
+            _,
+            memory_aligned_image_embeds_new,
+            deepstack_memory_aligned_embeds_new,
+            memory_aligned_timestamps_new,
+        ) = self._forward_addmemory_merge(
+            i,
+            pts3d=this_pts3d,
+            init_memory_feat=init_memory_feat,
+            memory_feat=memory_feat_for_add,
+            memory_pos=pos_for_add,
+            feat_i=feat_i.clone().detach(),
+            dec_i=dec[-1][:, 1:].clone().detach(),
+            shape_i=view['true_shape'],
+            memory_aligned_image_embeds=memory_aligned_image_embeds,
+            image_embeds_i=img_emb_i,
+            deepstack_memory_aligned_embeds=deepstack_memory_aligned_embeds,
+            deepstack_image_embeds_i=deepstack_emb_i,
+            memory_aligned_timestamps=memory_aligned_timestamps,
+            lambda_decay=lambda_decay,
+            max_memory_tokens=max_memory_tokens,
+        )
+
+        del dec, head_input, new_memory_feat
+        if i % 50 == 0 and i > 0:
+            torch.cuda.empty_cache()
+
+        # ── 13. Pack and return updated state ─────────────────────────────────
+        return {
+            'memory_feat':                    memory_feat_new,
+            'pos_decode_memory':              pos_decode_memory_new,
+            'mem':                            mem,
+            'init_memory_feat':               init_memory_feat_new,
+            'memory_aligned_image_embeds':    memory_aligned_image_embeds_new,
+            'deepstack_memory_aligned_embeds': deepstack_memory_aligned_embeds_new,
+            'memory_aligned_timestamps':      memory_aligned_timestamps_new,
+            'frame_idx':                      i + 1,
+        }
 
     

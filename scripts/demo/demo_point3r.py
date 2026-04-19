@@ -572,6 +572,7 @@ def run_models(model,
         query = "Describe this scene.",
         pointer_data = None,
         enable_thinking = False,
+        verbose = True,
     ):
 
     # Load pointer data from file if not provided
@@ -579,13 +580,14 @@ def run_models(model,
         print(f"\nLoading pointer data from {pointer_data_path}...")
         pointer_data = torch.load(pointer_data_path, weights_only=True)
         print("Pointer data loaded successfully!")
-    else:
+    elif verbose:
         print(f"\nUsing pre-loaded pointer data")
 
     # stage 2, LLM runtime measurement
-    print("\n" + "="*70)
-    print(f"Stage 2 (LLM Run)")
-    print("="*70)
+    if verbose:
+        print("\n" + "="*70)
+        print(f"Stage 2 (LLM Run)")
+        print("="*70)
     stage2_start = time()
 
     messages_with_pointer = [
@@ -599,7 +601,8 @@ def run_models(model,
     ]
 
     # Create message with pointer token
-    print("\nGenerating response with pointer memory...")
+    if verbose:
+        print("\nGenerating response with pointer memory...")
     text_pointer = processor.apply_chat_template(messages_with_pointer, tokenize=False, add_generation_prompt=True, enable_thinking=enable_thinking)
     inputs_pointer = processor(
         text=[text_pointer],
@@ -662,10 +665,10 @@ def run_models(model,
     output_text_pointer = processor.batch_decode(
         generated_ids_pointer_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )
-    print(f"Response with pointer memory: {output_text_pointer[0]}")
-
     stage2_end = time()
-    print(f"Stage 2 (LLM Runtime) runtime: {stage2_end - stage2_start:.2f} seconds")
+    if verbose:
+        print(f"Response with pointer memory: {output_text_pointer[0]}")
+        print(f"Stage 2 (LLM Runtime) runtime: {stage2_end - stage2_start:.2f} seconds")
 
     # print("\n" + "="*70)
     # print("Demo completed!")
@@ -673,6 +676,76 @@ def run_models(model,
 
     # Return the generated response
     return output_text_pointer[0]
+
+def run_vla_loop(
+    model,
+    processor,
+    min_pixels,
+    max_pixels,
+    point3r_model,
+    frame_source,
+    query_fn,
+    max_memory_tokens=512,
+    lambda_decay=1.0,
+    enable_thinking=False,
+):
+    """Online / VLA inference loop — no disk I/O, memory lives on GPU.
+
+    At each step:
+      1. Add the new frame to the Point3R memory (incremental update).
+      2. Truncate memory to ``max_memory_tokens``.
+      3. Feed the memory to the LLM and generate a response.
+
+    Args:
+        model: Loaded Qwen model.
+        processor: Qwen processor with pointer-token support.
+        min_pixels: Image processor min_pixels setting.
+        max_pixels: Image processor max_pixels setting.
+        point3r_model: Loaded Point3R model.
+        frame_source: Iterable of PIL Images (one per time step).
+        query_fn: Callable[int] -> str — returns the text query for each
+                  frame index.
+        max_memory_tokens: Hard cap on memory token count.
+        lambda_decay: EMA decay for merged Qwen embeddings.
+        enable_thinking: Passed to processor.apply_chat_template.
+
+    Yields:
+        (frame_idx: int, response: str) for each frame.
+    """
+    from qwen_vl.model.point3r.extract_memory import (
+        init_online_memory,
+        step_online_memory,
+    )
+
+    memory_state = init_online_memory(point3r_model)
+
+    for frame_idx, frame in enumerate(frame_source):
+        print(f"\n[VLA] Step {frame_idx}: updating Point3R memory...")
+        pointer_data, memory_state = step_online_memory(
+            frame,
+            memory_state,
+            point3r_model,
+            model,
+            processor,
+            min_pixels,
+            max_pixels,
+            max_memory_tokens=max_memory_tokens,
+            lambda_decay=lambda_decay,
+        )
+        n_tokens = pointer_data['pointer_memory_embeds'].shape[0]
+        print(f"[VLA] Memory size: {n_tokens} tokens")
+
+        query    = query_fn(frame_idx)
+        response = run_models(
+            model,
+            processor,
+            pointer_data=pointer_data,
+            query=query,
+            enable_thinking=enable_thinking,
+            verbose=False,
+        )
+        yield frame_idx, response
+
 
 def extract_scene_id_from_pointer_path(pointer_data_path: str) -> str:
     """

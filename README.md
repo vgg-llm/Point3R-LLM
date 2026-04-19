@@ -109,6 +109,6 @@ If you find our work useful, please consider citing:
 
 ## Acknowledgements
 
-* This work is based on [VG-LLM](https://github.com/lavi-lab/VG-LLM) by Zheng et al. and [Point3R](https://github.com/YkiWu/Point3R) by Wu et al.. We thank the authors for their open-source contribution.
+* This work is based on [VG-LLM](https://github.com/lavi-lab/VG-LLM) by Zheng et al. and [Point3R](https://github.com/YkiWu/Point3R) by Wu et al. We thank the authors for their open-source contribution.
 * This work is also built upon [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL), [Point3R](https://github.com/), and various 3D datasets including [ScanNet](https://github.com/ScanNet/ScanNet), [ScanRefer](https://github.com/daveredrum/ScanRefer), [Scan2Cap](https://github.com/daveredrum/Scan2Cap), and [EmbodiedScan](https://github.com/OpenRobotLab/EmbodiedScan).
 * We thank the developers of [LMMs-Eval](https://github.com/EvolvingLMMs-Lab/lmms-eval) for their evaluation framework.

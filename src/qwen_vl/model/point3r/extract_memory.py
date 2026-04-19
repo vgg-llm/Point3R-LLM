@@ -734,6 +734,225 @@ def extract_pointer_memory(
     return result
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Online / VLA inference helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def init_online_memory(point3r_model):
+    """Return an empty MemoryState dict for online (VLA) inference.
+
+    Call this once before the frame loop, then pass the returned dict to
+    ``step_online_memory()`` at each step.
+
+    Args:
+        point3r_model: Initialised ``Point3R`` model instance.
+
+    Returns:
+        dict — empty memory state with ``frame_idx=0``.
+    """
+    return point3r_model.init_memory_state()
+
+
+def _extract_pointer_data_from_state(memory_state):
+    """Extract a ``pointer_data`` dict from a MemoryState produced by
+    ``step_online_memory()``.
+
+    Mirrors the extraction logic at the tail of ``extract_pointer_memory``
+    (lines 584–734), but reads directly from the in-memory state dict
+    instead of re-running Point3R inference.
+
+    Args:
+        memory_state: dict returned by ``step_online_memory()``.
+
+    Returns:
+        dict with keys ``pointer_memory_embeds``, ``pointer_positions``,
+        ``pointer_timestamps``, and optionally ``deepstack_image_embeds``.
+        Ready to pass to ``run_models(pointer_data=...)``.
+    """
+    # ── pointer_memory_embeds ─────────────────────────────────────────────────
+    mae = memory_state['memory_aligned_image_embeds']
+    if mae is None:
+        raise ValueError("memory_aligned_image_embeds is None — has step_online_memory been called?")
+    # After i>=1, _forward_addmemory_merge returns a list (one element per batch)
+    if isinstance(mae, list):
+        pointer_memory_embeds = mae[-1]
+    elif mae.dim() == 3:
+        pointer_memory_embeds = mae[0]   # remove batch dim
+    else:
+        pointer_memory_embeds = mae
+
+    # ── pointer_positions ─────────────────────────────────────────────────────
+    pdm = memory_state['pos_decode_memory']
+    if pdm is None:
+        raise ValueError("pos_decode_memory is None")
+    if isinstance(pdm, list):
+        pointer_positions = pdm[-1].cpu()
+    elif pdm.dim() == 3:
+        pointer_positions = pdm[0].cpu()
+    else:
+        pointer_positions = pdm.cpu()
+
+    # ── pointer_timestamps ────────────────────────────────────────────────────
+    pts = memory_state['memory_aligned_timestamps']
+    pointer_timestamps = None
+    if pts is not None:
+        if isinstance(pts, list):
+            pointer_timestamps = pts[-1].cpu()
+        elif pts.dim() == 2:
+            pointer_timestamps = pts[0].cpu()
+        else:
+            pointer_timestamps = pts.cpu()
+
+    # ── Sort by ascending timestamp ───────────────────────────────────────────
+    if pointer_timestamps is not None:
+        sort_idx              = torch.argsort(pointer_timestamps)
+        pointer_timestamps    = pointer_timestamps[sort_idx]
+        pointer_memory_embeds = pointer_memory_embeds[sort_idx]
+        pointer_positions     = pointer_positions[sort_idx]
+
+    result = {
+        'pointer_memory_embeds': pointer_memory_embeds,
+        'pointer_positions':     pointer_positions,
+    }
+    if pointer_timestamps is not None:
+        result['pointer_timestamps'] = pointer_timestamps
+
+    # ── deepstack_image_embeds ────────────────────────────────────────────────
+    ds = memory_state['deepstack_memory_aligned_embeds']
+    if ds is not None:
+        processed = []
+        for layer_embeds in ds:
+            # Each layer may be a list (one per batch) or a tensor
+            if isinstance(layer_embeds, list):
+                le = layer_embeds[-1]
+            elif layer_embeds.dim() == 3:
+                le = layer_embeds[0]
+            else:
+                le = layer_embeds
+            if pointer_timestamps is not None:
+                le = le[sort_idx]
+            processed.append(le)
+        result['deepstack_image_embeds'] = processed
+
+    return result
+
+
+def _extract_visual_embeddings_batched(model, processor, image_inputs, min_pixels, max_pixels, batch_size=2):
+    """Extract image embeddings from the visual encoder in batches.
+    Handles Qwen3-VL (tuple output with deepstack), Qwen3.5 (BaseModelOutputWithPooling), and Qwen2.5-VL (raw tensor).
+    """
+    import torch
+    _visual = model.visual if hasattr(model, 'visual') else model.model.visual
+    model_device = next(_visual.parameters()).device
+    image_embeds_list = []
+    deepstack_image_embeds = []
+    grid_thw_list = []
+
+    for i in range(0, len(image_inputs), batch_size):
+        batch_images = image_inputs[i:i+batch_size]
+        processed_batch = processor.image_processor(images=batch_images, min_pixels=min_pixels, max_pixels=max_pixels)
+
+        with torch.inference_mode():
+            pixel_values = processed_batch.pixel_values.type(_visual.dtype).to(model_device)
+            grid_thw = processed_batch.image_grid_thw
+
+            visual_output = _visual(pixel_values, grid_thw=grid_thw)
+            batch_deepstack_image_embeds = None
+            if isinstance(visual_output, tuple):
+                batch_image_embeds, batch_deepstack_image_embeds = visual_output
+            elif hasattr(visual_output, 'pooler_output'):
+                batch_image_embeds = visual_output.pooler_output
+            else:
+                batch_image_embeds = visual_output
+
+            image_embeds_list.append(batch_image_embeds)
+            if batch_deepstack_image_embeds is not None:
+                if len(deepstack_image_embeds) == 0:
+                    deepstack_image_embeds = [[] for _ in range(len(batch_deepstack_image_embeds))]
+                for layer_idx, layer_embeds in enumerate(batch_deepstack_image_embeds):
+                    deepstack_image_embeds[layer_idx].append(layer_embeds)
+            grid_thw_list.append(grid_thw)
+
+    image_embeds = torch.cat(image_embeds_list, dim=0)
+    grid_thw = torch.cat(grid_thw_list, dim=0)
+    if deepstack_image_embeds:
+        deepstack_image_embeds = [torch.cat(layer_embeds_list, dim=0) for layer_embeds_list in deepstack_image_embeds]
+
+    return image_embeds, grid_thw, deepstack_image_embeds
+
+
+def step_online_memory(
+    new_frame,
+    memory_state,
+    point3r_model,
+    model,
+    processor,
+    min_pixels,
+    max_pixels,
+    max_memory_tokens=512,
+    lambda_decay=1.0,
+):
+    """Process ONE new frame, update the Point3R memory, and return
+    a ``pointer_data`` dict ready for ``run_models()``.
+
+    No disk I/O.  Memory lives entirely on GPU between calls.
+
+    Args:
+        new_frame: PIL Image of the new observation.
+        memory_state: dict from ``init_online_memory()`` or a previous
+                      ``step_online_memory()`` call.
+        point3r_model: Initialised ``Point3R`` model.
+        model: Qwen LLM (provides the visual encoder).
+        processor: Qwen processor (provides image_processor).
+        min_pixels: Passed to the image processor.
+        max_pixels: Passed to the image processor.
+        max_memory_tokens: Hard cap on memory token count after each step.
+        lambda_decay: EMA decay for merged Qwen embeddings.
+
+    Returns:
+        pointer_data (dict): pass to ``run_models(pointer_data=...)``.
+        new_memory_state (dict): pass to the next ``step_online_memory()`` call.
+    """
+    import torch
+
+    point3r_device = next(point3r_model.parameters()).device
+
+    # ── 1. Extract Qwen visual embeddings for this single frame ───────────────
+    image_embeds, grid_thw, deepstack_image_embeds = _extract_visual_embeddings_batched(
+        model, processor, [new_frame], min_pixels, max_pixels, batch_size=1
+    )
+    image_embeds = image_embeds.to(point3r_device)
+    grid_thw     = grid_thw.to(point3r_device)
+    if deepstack_image_embeds:
+        deepstack_image_embeds = [l.to(point3r_device) for l in deepstack_image_embeds]
+
+    # ── 2. Prepare the Point3R view dict ─────────────────────────────────────
+    t, h, w      = grid_thw[0].tolist()
+    merge_size   = processor.image_processor.merge_size
+    patch_size   = processor.image_processor.patch_size
+    target_size  = (
+        (w // merge_size) * patch_size,   # width
+        (h // merge_size) * patch_size,   # height
+    )
+    views = prepare_images_for_point3r([new_frame], target_size=target_size, crop_border=0)
+    view  = {k: v.to(point3r_device) for k, v in views[0].items()}
+
+    # ── 3. Incremental Point3R step ───────────────────────────────────────────
+    new_memory_state = point3r_model.step_online(
+        view,
+        memory_state,
+        image_embeds_i=image_embeds,
+        grid_thw_i=grid_thw,
+        deepstack_embeds_i=deepstack_image_embeds if deepstack_image_embeds else None,
+        max_memory_tokens=max_memory_tokens,
+        lambda_decay=lambda_decay,
+    )
+
+    # ── 4. Extract pointer_data from updated state ────────────────────────────
+    pointer_data = _extract_pointer_data_from_state(new_memory_state)
+    return pointer_data, new_memory_state
+
+
 if __name__ == "__main__":
     # Example usage
     print("Example: Extract pointer memory from an image")
