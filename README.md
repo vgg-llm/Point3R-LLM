@@ -139,25 +139,25 @@ Convert the evaluation split (writes `data/evaluation/vsibench_point3r/test.json
 python scripts/preprocess/convert_vsibench_eval_to_point3r.py
 ```
 
-### 3. Preprocess the 3D scenes
+### 3. Process the 3D Scenes
 
-Generate per-scene pointer memory `.pt` files under `data/media/{scannet,scannetpp,arkitscenes}/pointer_memory/`.
+Generate per-scene pointer memory `.pt` files under `data/media/{scannet,scannetpp,arkitscenes}/pointer_memory/`. Each launcher fans out across the local GPUs.
 
-* **ScanNet** — 8-GPU local launcher:
+* **ScanNet:**
     ```bash
     bash scripts/demo/run_preprocess_simple.sh
     ```
-* **ScanNet++** — SLURM array task:
+* **ScanNet++:**
     ```bash
-    bash scripts/demo/slurm_preprocess_scannetpp_task.sh \
-        <task_id> <total_tasks> \
-        data/media/scannetpp/pointer_memory <sample_ct>
+    bash scripts/demo/run_preprocess_scannetpp_simple.sh
     ```
-* **ARKitScenes** — SLURM array task:
+* **ARKitScenes:**
     ```bash
-    bash scripts/demo/slurm_preprocess_arkit_task.sh \
-        <task_id> <total_tasks> \
-        data/media/arkitscenes/pointer_memory <sample_ct>
+    bash scripts/demo/run_preprocess_arkit_simple.sh
+    ```
+* **RoboFAC** (only required for the RoboFAC benchmark):
+    ```bash
+    bash scripts/demo/run_preprocess_robofac_simple.sh
     ```
 
 ### 4. Train & Evaluate
