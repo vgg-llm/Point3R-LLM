@@ -10,15 +10,6 @@ class ModelArguments:
     tune_mm_mlp: bool = field(default=False)
     tune_mm_vision: bool = field(default=False)
 
-    # Geometry encoder configuration
-    use_geometry_encoder: bool = field(default=False)  # Whether to use 3D geometry encoder
-    geometry_encoder_type: str = field(default="vggt")  # Type of geometry encoder ("vggt", "pi3")
-    geometry_encoder_path: str = field(default="facebook/VGGT-1B/")  # Path to pre-trained geometry encoder model
-    reference_frame: str = field(default="first")  # Reference frame for geometry encoding ("first", "last"), only available for vggt
-    feature_fusion_method: str = field(default="add")  # Method to fuse geometry and visual features ("add", "concat", "cross_attention", "gate")
-    fusion_num_layers: int = field(default=1)  # Number of layers in the cross-attention module when feature_fusion_method is "cross_attention"
-    geometry_merger_type: str = field(default="mlp")  # Type of geometry feature merger ("mlp", "avg")
-
     use_pointer_memory: bool = field(default=False)
     use_preprocessed_input: bool = field(default=False)
     point3r_model_path: str = field(default="./cache/point3r_512.pth")

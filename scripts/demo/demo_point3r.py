@@ -46,40 +46,7 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
     print("="*70)
     stage0_start = time()
 
-    if 'Qwen3.5' in model_path or 'Qwen3_5' in model_path:
-        from qwen_vl.model.qwen3_5.modeling_qwen3_5_point3r import Qwen3_5ForConditionalGenerationWithPoint3R
-        from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
-        # Load model with memory-efficient settings
-        print(f"Loading model from: {model_path}")
-        extra_kwargs = {}
-        if attn_implementation is not None:
-            extra_kwargs["attn_implementation"] = attn_implementation
-        model = Qwen3_5ForConditionalGenerationWithPoint3R.from_pretrained(
-            model_path,
-            cache_dir="./cache",
-            torch_dtype=torch.bfloat16,
-            device_map="auto" if device is None else device,
-            low_cpu_mem_usage=True,
-            **extra_kwargs,
-        )
-
-        # Load the base processor first
-        print("Loading processor...")
-        min_pixels = 192 * 32 * 32
-        max_pixels = 192 * 32 * 32
-        base_processor = AutoProcessor.from_pretrained(
-            model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
-        )
-
-        # Reuse Qwen3VLProcessorWithPoint3R — Qwen3.5 shares the same vision token vocabulary
-        processor = Qwen3VLProcessorWithPoint3R(
-            image_processor=base_processor.image_processor,
-            tokenizer=base_processor.tokenizer,
-            video_processor=base_processor.video_processor,
-            chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
-            pointer_format=pointer_format,
-        )
-    elif 'Qwen3-VL' in model_path or 'Qwen3VL' in model_path:
+    if 'Qwen3-VL' in model_path or 'Qwen3VL' in model_path:
         from qwen_vl.model.qwen3_vl.modeling_qwen3_point3r import Qwen3VLForConditionalGenerationWithPoint3R
         from qwen_vl.model.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessorWithPoint3R
         # Load model with memory-efficient settings
@@ -118,39 +85,9 @@ def load_models(load_point3r=True, device=None, model_path="Qwen/Qwen2.5-VL-3B-I
             pointer_format=pointer_format,
         )
     else:
-        from qwen_vl.model.modeling_qwen_point3r import Qwen2_5_VLForConditionalGenerationWithPoint3R
-        from qwen_vl.model.processing_qwen2_5_vl import Qwen2_5_VLProcessorWithPoint3R
+        raise ValueError(f"Unsupported model_path for release demo: {model_path!r}. Expected a Qwen3-VL checkpoint.")
 
-        # Load model with memory-efficient settings
-        print(f"Loading model from: {model_path}")
-        extra_kwargs = {}
-        if attn_implementation is not None:
-            extra_kwargs["attn_implementation"] = attn_implementation
-        model = Qwen2_5_VLForConditionalGenerationWithPoint3R.from_pretrained(
-            model_path,
-            cache_dir="./cache",
-            torch_dtype=torch.bfloat16,  # Use bf16 for memory efficiency
-            device_map="auto" if device is None else device,  # Automatically distribute model across available devices
-            low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
-            **extra_kwargs,
-        )
-
-        # Load the base processor first
-        print("Loading processor...")
-        min_pixels = 256 * 28 * 28
-        max_pixels = 1280 * 28 * 28
-        base_processor = AutoProcessor.from_pretrained(
-            model_path, use_fast=True, min_pixels=min_pixels, max_pixels=max_pixels
-        )
-
-        # Create Point3R processor with pointer token support
-        processor = Qwen2_5_VLProcessorWithPoint3R(
-            image_processor=base_processor.image_processor,
-            tokenizer=base_processor.tokenizer,
-            chat_template=base_processor.chat_template if hasattr(base_processor, 'chat_template') else None,
-        )
-
-    ##################### This part should be inside Qwen2_5_VLForConditionalGenerationWithPoint3R 
+    ##################### Pointer token wiring
 
     # Store pointer token ID in model config for proper processing
     model.config.pointer_token_id = processor.pointer_token_id

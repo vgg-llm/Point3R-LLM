@@ -644,8 +644,6 @@ class LazySupervisedDataset(Dataset):
         if "image" in self.list_data_dict[i]:
             data_dict["pixel_values"] = image
             data_dict["image_grid_thw"] = grid_thw
-            if getattr(self.data_args, "use_geometry_encoder", False):
-                data_dict["geometry_encoder_inputs"] = geometry_encoder_inputs
         # video exist in the data
         elif "video" in self.list_data_dict[i]:
             data_dict["pixel_values_videos"] = video

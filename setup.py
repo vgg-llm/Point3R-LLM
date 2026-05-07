@@ -1,17 +1,15 @@
+import os
 from setuptools import setup, find_packages
 
-try:
-    _long_description = open("README.md").read()
-except FileNotFoundError:
-    _long_description = ""
-
 setup(
-    name="cog3dmap",
+    name="vgllm",
     version="0.1.0",
     packages=find_packages("src"),
     package_dir={"": "src"},
     install_requires=[
-        "transformers==5.3.0",
+        "torch==2.5.1",
+        "torchvision==0.20.1",
+        "transformers==4.57.6",  # transformers-4.57.0 is required for Qwen3-VL, but it is not compatible with 4.50.0.
         "deepspeed==0.16.4",
         "flash_attn==2.7.4.post1",
         "triton==3.1.0",
@@ -68,13 +66,11 @@ setup(
         "terminaltables",
         "viser",
         "natsort",
-        # "causal_conv1d",
-        # "flash-linear-attention",
     ],
-    author="Chanyoung Gwak*, Yoonwoo Jeong*, Byungwoo Jeon, Hyunseok Lee, Jinwoo Shin, Minsu Cho",
-    author_email="gwakcy@postech.ac.kr",
-    description="Official PyTorch implementation for \"Cog3DMap: Multi-View Vision-Language Reasoning with 3D Cognitive Maps\"",
-    long_description=_long_description,
+    author="Duo Zheng, Shijia Huang, Yanyang Li, Liwei Wang",
+    author_email="dzheng23@link.cuhk.edu.hk",
+    description="Official PyTorch implementation for \"Learning from Videos for 3D World: Enhancing MLLMs with 3D Vision Geometry Priors\"",
+    long_description=open("README.md").read() if os.path.exists("README.md") else "",
     long_description_content_type="text/markdown",
     classifiers=[
         "Programming Language :: Python :: 3",

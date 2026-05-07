@@ -53,12 +53,6 @@ POINTER_DIR_NAME="${POINTER_DIR_NAME:-}"
 # --- Frame ID labels for pointer tokens (optional) ---
 ADD_FRAME_ID="${ADD_FRAME_ID:-}"
 
-# --- Geometry Encoder (optional, for VGGT) ---
-USE_GEOMETRY_ENCODER="${USE_GEOMETRY_ENCODER:-False}"
-GEOMETRY_ENCODER_TYPE="${GEOMETRY_ENCODER_TYPE:-}"
-GEOMETRY_ENCODER_PATH="${GEOMETRY_ENCODER_PATH:-}"
-FEATURE_FUSION_METHOD="${FEATURE_FUSION_METHOD:-}"
-
 # --- Training Hyperparameters ---
 TOTAL_BATCH_SIZE="${TOTAL_BATCH_SIZE:-16}"
 LR="${LR:-1e-5}"
@@ -131,10 +125,6 @@ export TUNE_POINTER_POSITION_ENCODER="${TUNE_POINTER_POSITION_ENCODER}"
 export POINTER_FORMAT="${POINTER_FORMAT}"
 export POINTER_DIR_NAME="${POINTER_DIR_NAME}"
 export ADD_FRAME_ID="${ADD_FRAME_ID}"
-export USE_GEOMETRY_ENCODER="${USE_GEOMETRY_ENCODER}"
-export GEOMETRY_ENCODER_TYPE="${GEOMETRY_ENCODER_TYPE}"
-export GEOMETRY_ENCODER_PATH="${GEOMETRY_ENCODER_PATH}"
-export FEATURE_FUSION_METHOD="${FEATURE_FUSION_METHOD}"
 export TOTAL_BATCH_SIZE="${TOTAL_BATCH_SIZE}"
 export LR="${LR}"
 export MM_PROJECTOR_LR="${MM_PROJECTOR_LR}"
@@ -199,7 +189,6 @@ CMD=(
     --seed "$SEED"
     --run_name "$EXP_NAME"
     --report_to wandb
-    --use_geometry_encoder "$USE_GEOMETRY_ENCODER"
     --use_pointer_memory "$USE_POINTER_MEMORY"
     --use_preprocessed_input "$USE_PREPROCESSED_INPUT"
     --merge_memory_feat "$MERGE_MEMORY_FEAT"
@@ -217,9 +206,6 @@ CMD=(
 [[ -n "$POINTER_FORMAT" ]]                && CMD+=(--pointer_format "$POINTER_FORMAT")
 [[ -n "$POINTER_DIR_NAME" ]]             && CMD+=(--pointer_dir_name "$POINTER_DIR_NAME")
 [[ -n "$ADD_FRAME_ID" ]]                 && CMD+=(--add_frame_id "$ADD_FRAME_ID")
-[[ -n "$GEOMETRY_ENCODER_TYPE" ]]         && CMD+=(--geometry_encoder_type "$GEOMETRY_ENCODER_TYPE")
-[[ -n "$GEOMETRY_ENCODER_PATH" ]]         && CMD+=(--geometry_encoder_path "$GEOMETRY_ENCODER_PATH")
-[[ -n "$FEATURE_FUSION_METHOD" ]]         && CMD+=(--feature_fusion_method "$FEATURE_FUSION_METHOD")
 
 # --- Extra args passthrough ---
 if [[ -n "$EXTRA_TRAIN_ARGS" ]]; then
