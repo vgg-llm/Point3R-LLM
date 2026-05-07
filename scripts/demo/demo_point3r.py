@@ -1162,50 +1162,15 @@ def set_seed(seed=42):
 
 if __name__=='__main__':
     set_seed(42)
-
-    # Example 1: Run scan2cap with base model
-    # run_scan2cap()
-
-    # # Example 2: Run scan2cap with fine-tuned checkpoint
-    # run_scan2cap(
-    #     scan2cap_annotation_path="data/demo_data/scan2cap_debug_32frames_point3r.json",
-    #     output_path="data/demo_data/scan2cap_val_output.json",
-    #     auto_preprocess=True,
-    #     use_viser=True
-    #     # model_path="outputs/scan2cap_point3r_all_frames",
-    # )
-
-    # Example 3: Preprocess images and run inference (original demo)
-    # input_images_dir = "./data/demo_data/sample_data"
-    # pointer_data_path = "./data/demo_data/sample_data/pointer_data_qwen3.pt"
-    scene_id = "scene0000_00"
     sample_ct = 32
     pointer_format = "video"
     use_merge = True
-    postfix = "_compact" if use_merge else ""
-    input_images_dir = f"./data/media/scannet/posed_images/{scene_id}"
-    pointer_data_path = f"./data/demo_data/{scene_id}_{sample_ct}f_{pointer_format}{postfix}.pt"
+    input_images_dir = f"./data/demo_data/ScanNet_scene0000_00"
+    input_video_path = None
+    pointer_data_path = f"./data/demo_data/scene0000_00_{sample_ct}_frames.pt"
 
-    # scene_id = "ac48a9b736"
-    # sample_ct = 32
-    # pointer_format = "video"
-    # use_merge = True
-    # # input_images_dir = "./data/demo_data/arkit_47895700"
-    # # pointer_data_path = "./data/demo_data/arkit_47895700.pt"
-    # input_images_dir = f"./data/demo_data/scannetpp_{scene_id}"
-    # pointer_data_path = f"./data/demo_data/scannetpp_{scene_id}.pt"
-
-    # sample_ct = 32
-    # pointer_format = "video"
-    # use_merge = False
-    # input_images_dir = ""
-    # input_video_path = "data/demo_data/robofac_demo.mp4"
-    # pointer_data_path = f"./data/demo_data/robofac_demo.pt"
-
-    # query = "Describe this image."
-    query = "Describe the scene with the spatial layout."
-    # model_path="Qwen/Qwen3-VL-4B-Instruct"
-    model_path="Qwen/Qwen3.5-4B"
+    query = "Describe the spatial layout of the scene."
+    model_path="Qwen/Qwen3-VL-4B-Instruct"
     use_viser = True
     model, processor, min_pixels, max_pixels, point3r_model = load_models(
         model_path=model_path, pointer_format=pointer_format, use_merge=use_merge
@@ -1213,8 +1178,7 @@ if __name__=='__main__':
     with torch.inference_mode():
         if input_images_dir:
             preprocess_images(model, processor, min_pixels, max_pixels, point3r_model,
-                        input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None, 
-                        image_extensions = ("*.jpg",))
+                        input_images_dir, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None)
         else:
             preprocess_video(model, processor, min_pixels, max_pixels, point3r_model,
                         input_video_path, pointer_data_path, use_viser, sample_ct=sample_ct, max_memory_tokens=None)
