@@ -278,7 +278,7 @@ def preprocess_images(
         if len(pose_paths) > sample_ct:
             step = len(pose_paths) / sample_ct
             pose_paths = [pose_paths[int(i * step)] for i in range(sample_ct)]
-
+    print(image_paths)
     vision_message = [
         {
             "role": "user",
@@ -1165,9 +1165,9 @@ if __name__=='__main__':
     sample_ct = 32
     pointer_format = "video"
     use_merge = True
-    input_images_dir = f"./data/demo_data/ScanNet_scene0000_00"
+    input_images_dir = f"./demo_data/ScanNet_scene0000_00"
     input_video_path = None
-    pointer_data_path = f"./data/demo_data/scene0000_00_{sample_ct}_frames.pt"
+    pointer_data_path = f"./demo_data/scene0000_00_{sample_ct}_frames.pt"
 
     query = "Describe the spatial layout of the scene."
     model_path="Qwen/Qwen3-VL-4B-Instruct"

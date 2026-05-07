@@ -67,6 +67,13 @@ Cog3DMap-8B sets new state-of-the-art on multi-view spatial reasoning benchmarks
     > pip install flash-attn==2.7.4.post1 --no-build-isolation
     > ```
 
+## 🎬 Demo
+
+For demo results, run the following:
+```bash
+python scripts/demo/demo_point3r.py
+```
+
 ## 🗂️ Datasets
 
 Cog3DMap is trained and evaluated on a variety of datasets:
@@ -162,13 +169,6 @@ sbatch scripts/run/vsibench_8b.sh
 ```
 
 Outputs land at `outputs/vsibench_Qwen3VL_8b_memfeat_32frame_video`.
-
-## 🎬 Demo
-
-For demo results, run the following:
-```bash
-python scripts/demo/demo_point3r.py
-```
 
 ## ✅ Todo List
 
