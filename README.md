@@ -1,4 +1,4 @@
-# Cog3DMap: Multi-View Vision-Language Reasoning with 3D Cognitive Maps
+# Multi-View Vision-Language Reasoning with 3D Cognitive Maps
 
 <div align="center" margin-bottom="3em">
 
@@ -10,14 +10,7 @@
 
 <div align="center" margin-bottom="3em">
 
-<a target="_blank" href="https://gwakcy0.github.io/">Chanyoung Gwak</a>*,
-<a target="_blank" href="https://jeongyw12382.github.io/">Yoonwoo Jeong</a>*,
-<a target="_blank" href="https://rootyjeon.github.io/">Byungwoo Jeon</a>,
-<a target="_blank" href="https://hyunseoklee-ai.github.io/">Hyunseok Lee</a>,
-<a target="_blank" href="https://alinlab.kaist.ac.kr/shin.html">Jinwoo Shin</a>, and
-<a target="_blank" href="https://cog3dmap.github.io/">Minsu Cho</a>
-
-**POSTECH · KAIST · RLWRLD**
+**Anonymous Authors**
 
 </div>
 
@@ -57,7 +50,7 @@ Cog3DMap-8B sets new state-of-the-art on multi-view spatial reasoning benchmarks
 
 1. **Clone the repository:**
     ```bash
-    git clone https://github.com/Gwakcy0/Cog3DMap
+    git clone <repo-url>
     cd Cog3DMap
     ```
 
@@ -186,16 +179,7 @@ python scripts/demo/demo_point3r.py
 
 ## 📚 Citation
 
-If you find our work useful, please consider citing:
-
-```bibtex
-@article{gwak2025cog3dmap,
-  title   = {Cog3DMap: Multi-View Vision-Language Reasoning with 3D Cognitive Maps},
-  author  = {Chanyoung Gwak and Yoonwoo Jeong and Byungwoo Jeon and Hyunseok Lee and Jinwoo Shin and Minsu Cho},
-  journal = {arXiv preprint arXiv:2603.23023},
-  year    = {2025}
-}
-```
+Citation information will be released upon publication.
 
 ## 🙏 Acknowledgements
 

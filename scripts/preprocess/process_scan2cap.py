@@ -268,9 +268,9 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scanrefer_dir", type=str, default="/home/gwakcy/datasets/scanrefer/")
+    parser.add_argument("--scanrefer_dir", type=str, default="./data/scanrefer/")
     parser.add_argument("--scannet_dir", type=str, default="./data/media/scannet")
-    parser.add_argument("--embodiedscan", type=str, default="/home/gwakcy/datasets/embodiedscan-v2")
+    parser.add_argument("--embodiedscan", type=str, default="./data/embodiedscan-v2")
     parser.add_argument("--reference_frame", type=str, default="first")
     parser.add_argument("--output_dir", type=str, default="data/demo_data")
     parser.add_argument("--threshold", type=float, default=0.5)

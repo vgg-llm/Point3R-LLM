@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=Point3R-LLM-vstibench_8b_train_n_eval
 #SBATCH -o sbatch_log/vstibench-8b-32frame-video.%j.out
-#SBATCH --partition=cms_cvlab
+#SBATCH --partition=<your_partition>  # TODO: set to your cluster's partition
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1
 

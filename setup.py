@@ -2,7 +2,7 @@ import os
 from setuptools import setup, find_packages
 
 setup(
-    name="vgllm",
+    name="cog3dmap",
     version="0.1.0",
     packages=find_packages("src"),
     package_dir={"": "src"},
@@ -67,9 +67,9 @@ setup(
         "viser",
         "natsort",
     ],
-    author="Duo Zheng, Shijia Huang, Yanyang Li, Liwei Wang",
-    author_email="dzheng23@link.cuhk.edu.hk",
-    description="Official PyTorch implementation for \"Learning from Videos for 3D World: Enhancing MLLMs with 3D Vision Geometry Priors\"",
+    author="Anonymous",
+    author_email="",
+    description="Cog3DMap: Multi-View Vision-Language Reasoning with 3D Cognitive Maps",
     long_description=open("README.md").read() if os.path.exists("README.md") else "",
     long_description_content_type="text/markdown",
     classifiers=[

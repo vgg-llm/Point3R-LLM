@@ -25,8 +25,8 @@ IMAGE_EXTENSIONS = {
 # Default image base directories per data source
 DEFAULT_IMAGE_BASES = {
     "scannet": "data/media",      # {base}/scannet/posed_images/{scene_name}/*.jpg
-    "scannetpp": "/cms_cvlab/home/chanyoung/datasets",  # {base}/scannetpp/data/data/{scene_name}/dslr/resized_undistorted_images/*.JPG
-    "arkitscenes": "/cms_cvlab/home/chanyoung/datasets",   # {base}/arkitscenes/3dod/{Training|Validation}/{scene_id}/{scene_id}_frames/lowres_wide/
+    "scannetpp": "data/media",  # {base}/scannetpp/data/data/{scene_name}/dslr/resized_undistorted_images/*.JPG
+    "arkitscenes": "data/media",   # {base}/arkitscenes/3dod/{Training|Validation}/{scene_id}/{scene_id}_frames/lowres_wide/
 }
 
 

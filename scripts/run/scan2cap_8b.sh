@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=Point3R-LLM-8b_memfeat
 #SBATCH -o sbatch_log/8b-memfeat.%j.out
-#SBATCH --partition=cms_cvlab
+#SBATCH --partition=<your_partition>  # TODO: set to your cluster's partition
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1
 

@@ -91,7 +91,7 @@ mkdir -p "$OUTPUT_DIR"
 # WANDB
 # =============================================================================
 export NCCL_NVLS_ENABLE=0
-export WANDB_PROJECT="Point3R-LLM"
+export WANDB_PROJECT="${WANDB_PROJECT:-cog3dmap}"
 export WANDB_RUN_NAME="${EXP_NAME}"
 
 # =============================================================================
