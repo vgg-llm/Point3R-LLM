@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=Point3R-LLM-vsibench_8b
+#SBATCH --job-name=Cog3DMap_8B_on_vsibench_benchmark_train_and_evaluation
 #SBATCH -o sbatch_log/vsibench-8b-32frame-video.%j.out
-#SBATCH --partition=<your_partition>  # TODO: set to your cluster's partition
+#SBATCH --partition=cms_cvlab  # TODO: set to your cluster's partition
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1
 
@@ -23,7 +23,7 @@ export EVAL_MODEL_TYPE="point3r_llm_v2"
 export LOG_SUFFIX="vsibench_eval"
 
 # --- Train ---
-bash scripts/train/train.sh
+# bash scripts/train/train.sh
 
 # --- Evaluate ---
 export MODEL_PATH="./outputs/${EXP_NAME}"

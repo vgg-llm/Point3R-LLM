@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=Point3R-LLM-8b_memfeat
-#SBATCH -o sbatch_log/8b-memfeat.%j.out
-#SBATCH --partition=<your_partition>  # TODO: set to your cluster's partition
+#SBATCH --job-name=Cog3DMap_8B_on_Scan2cap_benchmark_train_and_evaluation
+#SBATCH -o sbatch_log/scan2cap-8b-32frame-video.%j.out
+#SBATCH --partition=cms_cvlab  # TODO: set to your cluster's partition
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1
 
@@ -22,7 +22,7 @@ export BENCHMARKS="scan2cap_point3r"
 export EVAL_MODEL_TYPE="point3r_llm_v2"
 
 # --- Train ---
-bash scripts/train/train.sh
+# bash scripts/train/train.sh
 
 # --- Evaluate ---
 export MODEL_PATH="./outputs/${EXP_NAME}"
