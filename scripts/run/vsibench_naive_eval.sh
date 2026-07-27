@@ -18,7 +18,7 @@ export MERGE_MEMORY_FEAT="False"
 export MEMORY_FUSION_METHOD="add"
 
 # Evaluation
-export BENCHMARKS="vsiibench"
+export BENCHMARKS="vsibench"
 export EVAL_MODEL_TYPE="point3r_llm_v2"
 export LOG_SUFFIX="vsibench_eval"
 
@@ -26,7 +26,7 @@ export LOG_SUFFIX="vsibench_eval"
 # bash scripts/train/train.sh
 
 # --- Evaluate ---
-export MODEL_PATH="${MODEL_OUTPUT_DIR}/${EXP_NAME}"
+# export MODEL_PATH="${MODEL_OUTPUT_DIR}/${EXP_NAME}"
 bash scripts/evaluation/eval.sh
 
 nvidia-smi

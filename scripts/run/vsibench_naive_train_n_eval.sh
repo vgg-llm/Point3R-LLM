@@ -18,7 +18,7 @@ export MERGE_MEMORY_FEAT="False"
 export MEMORY_FUSION_METHOD="add"
 
 # Evaluation
-export BENCHMARKS="vsiibench"
+export BENCHMARKS="vsibench"
 export EVAL_MODEL_TYPE="point3r_llm_v2"
 export LOG_SUFFIX="vsibench_eval"
 
