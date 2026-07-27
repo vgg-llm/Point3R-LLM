@@ -89,7 +89,8 @@ GRADIENT_ACCUMULATION_STEPS=$(($TOTAL_BATCH_SIZE / $NPROC_PER_NODE))
 # =============================================================================
 # Paths
 # =============================================================================
-OUTPUT_DIR="./outputs/${EXP_NAME}"
+# OUTPUT_DIR="./outputs/${EXP_NAME}"
+OUTPUT_DIR="${MODEL_OUTPUT_DIR}/${EXP_NAME}"
 CACHE_DIR="./cache"
 mkdir -p "$OUTPUT_DIR"
 
@@ -178,8 +179,8 @@ CMD=(
     --optim adamw_torch
     --model_max_length "$MODEL_MAX_LENGTH"
     --data_flatten False
-    --max_pixels $((576*28*28))
-    --min_pixels $((16*28*28))
+    --max_pixels $((600*32*32))
+    --min_pixels $((600*32*32))
     --base_interval 2
     --video_max_frames 8
     --video_min_frames 4

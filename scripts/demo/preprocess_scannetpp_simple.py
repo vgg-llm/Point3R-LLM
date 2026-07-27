@@ -26,7 +26,8 @@ def setup_scannetpp_paths(save_path='./data/media/scannetpp/pointer_memory'):
         input_image_paths: List of paths to image directories for each scene
         pointer_data_paths: List of paths where pointer data will be saved
     """
-    base_dir = Path('./data/media/scannetpp')
+    # base_dir = Path('./data/media/scannetpp')
+    base_dir = Path('../datasets/scannetpp/data/data')
     
     if not base_dir.exists():
         raise ValueError(f"Dataset directory not found: {base_dir}")

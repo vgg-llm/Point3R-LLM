@@ -7,7 +7,7 @@ SAVE_PATH=${3:-"./output/scannetpp"}
 SAMPLE_CT=${4:-32}
 
 # Set working directory
-cd /cms_cvlab/home/chanyoung/yoonwoo/Point3R-LLM
+# cd /cms_cvlab/home/chanyoung/yoonwoo/Point3R-LLM
 
 # Activate virtual environment
 echo "Activating virtual environment..."
