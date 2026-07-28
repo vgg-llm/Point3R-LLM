@@ -23,6 +23,9 @@ export MEMORY_FUSION_METHOD="add"
 export BENCHMARKS="vstibench"
 export EVAL_MODEL_TYPE="point3r_llm_v2"
 export LOG_SUFFIX="vstibench_eval"
+# Must match --gres=gpu:4 above; eval.sh otherwise defaults to 8 ranks and
+# ranks 4-7 crash with "CUDA error: invalid device ordinal".
+export NUM_PROCESSES=4
 
 # --- Train ---
 # bash scripts/train/train.sh

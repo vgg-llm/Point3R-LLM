@@ -70,6 +70,13 @@ DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-scripts/zero2_opt.json}"
 MODEL_MAX_LENGTH="${MODEL_MAX_LENGTH:-12800}"
 SEED="${SEED:-0}"
 
+# --- Image Resolution ---
+# MAX_PIXELS is a cap, MIN_PIXELS a floor. Setting them equal forces every frame
+# to that exact area, which pushes naive (non-pointer) runs past MODEL_MAX_LENGTH
+# since all 32 frames reach the LLM. Keep the floor low so frames stay native.
+MAX_PIXELS="${MAX_PIXELS:-$((576*28*28))}"
+MIN_PIXELS="${MIN_PIXELS:-$((16*28*28))}"
+
 # --- Tuning Flags ---
 TUNE_MM_LLM="${TUNE_MM_LLM:-True}"
 TUNE_MM_VISION="${TUNE_MM_VISION:-False}"
@@ -144,6 +151,8 @@ export NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS}"
 export SAVE_STEPS="${SAVE_STEPS}"
 export DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG}"
 export MODEL_MAX_LENGTH="${MODEL_MAX_LENGTH}"
+export MAX_PIXELS="${MAX_PIXELS}"
+export MIN_PIXELS="${MIN_PIXELS}"
 export SEED="${SEED}"
 export TUNE_MM_LLM="${TUNE_MM_LLM}"
 export TUNE_MM_VISION="${TUNE_MM_VISION}"
@@ -179,8 +188,8 @@ CMD=(
     --optim adamw_torch
     --model_max_length "$MODEL_MAX_LENGTH"
     --data_flatten False
-    --max_pixels $((600*32*32))
-    --min_pixels $((600*32*32))
+    --max_pixels "$MAX_PIXELS"
+    --min_pixels "$MIN_PIXELS"
     --base_interval 2
     --video_max_frames 8
     --video_min_frames 4
