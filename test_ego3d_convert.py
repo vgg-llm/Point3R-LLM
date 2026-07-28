@@ -231,3 +231,39 @@ def test_normalize_replaces_symlink_with_real_file(tmp_path):
     assert not (scene / "01_Side_Left.jpg").is_symlink()
     from PIL import Image
     assert Image.open(real).size == (1920, 886)  # source image untouched
+
+
+def test_link_scene_does_not_clobber_already_padded_real_file(tmp_path):
+    """A view path that already holds a real (padded) JPEG must survive a re-run of
+    link_scene untouched, while paths that are still symlinks get (re)created as usual.
+
+    This reproduces the normalize -> re-link -> re-normalize churn: link_scene used to
+    unconditionally unlink+recreate every view as a symlink to the original source,
+    which destroyed padding done by normalize_scene_resolution on every re-run.
+    """
+    image_root = tmp_path / "images"
+    image_root.mkdir()
+    for name in build_scene(WAYMO_SAMPLE)["image_names"]:
+        (image_root / name).write_bytes(b"fake-source")
+
+    scenes_root = tmp_path / "scenes"
+    scene = build_scene(WAYMO_SAMPLE)
+    scene_dir = link_scene(scene, image_root, scenes_root)
+
+    # Simulate normalize_scene_resolution having padded one view in place: replace its
+    # symlink with a real file holding different (padded) bytes.
+    padded_path = scene_dir / "01_Front_Left.jpg"
+    assert padded_path.is_symlink()
+    padded_path.unlink()
+    padded_path.write_bytes(b"padded-real-file")
+
+    # Re-run link_scene, as main() does on every converter invocation.
+    link_scene(scene, image_root, scenes_root)
+
+    # The padded real file must be left completely alone.
+    assert not padded_path.is_symlink()
+    assert padded_path.read_bytes() == b"padded-real-file"
+
+    # Every other view must still be a symlink, recreated as normal.
+    for name in ["00_Front.jpg", "02_Side_Left.jpg", "03_Front_Right.jpg", "04_Side_Right.jpg"]:
+        assert (scene_dir / name).is_symlink()

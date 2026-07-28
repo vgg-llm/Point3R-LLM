@@ -163,7 +163,11 @@ def link_scene(scene, image_root, scenes_root):
         if not source_path.exists():
             raise FileNotFoundError(f"missing Ego3D-Bench image: {source_path}")
         link_path = scene_dir / f"{i:02d}_{key}{source_path.suffix}"
-        if link_path.is_symlink() or link_path.exists():
+        if link_path.exists() and not link_path.is_symlink():
+            # Already normalized (padded) in place by normalize_scene_resolution; leave
+            # the real file alone so re-running the converter doesn't destroy padding.
+            continue
+        if link_path.is_symlink():
             link_path.unlink()
         link_path.symlink_to(source_path.resolve())
     return scene_dir
