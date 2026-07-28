@@ -127,6 +127,18 @@ def test_build_doc_schema():
     assert doc["metadata"]["scene_id"] == "seg_FRONT"
 
 
+def test_build_doc_carries_options():
+    doc = build_doc(WAYMO_SAMPLE)
+    assert doc["options"] == ["A. yes", "B. no"]
+
+
+def test_build_doc_options_defaults_to_empty_list_when_absent():
+    sample = dict(WAYMO_SAMPLE, category="Ego_Centric_Absolute_Distance",
+                  options=None, answer="13.7")
+    doc = build_doc(sample)
+    assert doc["options"] == []
+
+
 def test_build_doc_marks_absolute_distance_as_exact_number():
     sample = dict(WAYMO_SAMPLE, category="Ego_Centric_Absolute_Distance",
                   options=None, answer="13.7")

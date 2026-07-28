@@ -23,11 +23,23 @@ and pointer mode with `add_frame_id=true` so the visual tokens carry matching la
 
 ## Deviations from upstream scoring
 
-Both are strictly harsher than `Ego3D-Bench/utils/eval.py`:
-
 1. Unparseable numeric predictions score worst-case (100 m) instead of being dropped
    from the RMSE. Upstream's `if pred:` also drops legitimate `0` predictions.
+   Strictly harsher than `Ego3D-Bench/utils/eval.py`.
 2. No resume logic. Upstream's `idx < processed` check is off by one.
+3. For `Ego_Centric_Relative_Distance`, `Ego_Centric_Motion_Reasoning` and
+   `Object_Centric_Motion_Reasoning`, the ground truth is the option LETTER
+   (`A`/`B`) but the prompt suffix asks for "final answer (yes or no)" and the
+   options are text-valued (`['A. yes', 'B. no']`). A model that correctly answers
+   with the option text (e.g. `<answer>yes</answer>`) is credited by resolving the
+   prediction against the doc's own `options` list generically — not a yes/no
+   special case, so it also covers any other text-valued option. This is a
+   correctness fix, not a harshness change: upstream's own scorer
+   (`Ego3D-Bench/utils/eval.py`) has this same yes/no-versus-letter gap and would
+   also score a correct `yes`/`no` answer as wrong for these three categories.
+4. Numeric predictions are clipped to `[0, 100]`; upstream only upper-clips at 100
+   (no lower clip). Undocumented until now; strictly harsher for negative
+   predictions (rare, but possible from a malformed extraction).
 
 ## Reading the numbers
 

@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent / "src" / "lmms_eval" / "tasks" / "
 import utils as ego3d  # noqa: E402
 
 
-def _doc(category, answer, question_type):
-    return {
+def _doc(category, answer, question_type, options=None):
+    doc = {
         "conversations": [{"from": "human", "value": "MANIFEST\n<|pointer_pad|>\n\nQ?\nA. yes\nB. no"},
                           {"from": "gpt", "value": answer}],
         "answer": answer,
@@ -19,10 +19,18 @@ def _doc(category, answer, question_type):
         "metadata": {"idx": 1, "source": "waymo", "category": category,
                      "scene_id": "s", "question_type": question_type},
     }
+    if options is not None:
+        doc["options"] = options
+    return doc
 
 
 MC_DOC = _doc("Localization", "C", "multi_choice")
 NUM_DOC = _doc("Ego_Centric_Absolute_Distance", "13.7", "exact_number")
+
+YESNO_DOC_A = _doc("Object_Centric_Motion_Reasoning", "A", "multi_choice",
+                    options=["A. yes", "B. no"])
+YESNO_DOC_B = _doc("Ego_Centric_Motion_Reasoning", "B", "multi_choice",
+                    options=["A. yes", "B. no"])
 
 
 def test_doc_to_text_short_protocol_uses_pointer_prompt_and_letter_suffix():
@@ -69,6 +77,41 @@ def test_process_results_scores_multi_choice():
     assert correct["accuracy"] == 1.0
     wrong = ego3d.ego3d_process_results(MC_DOC, ["<answer>A</answer>"])["ego3d_score"]
     assert wrong["accuracy"] == 0.0
+
+
+def test_process_results_credits_yes_answer_text_against_letter_a_ground_truth():
+    """Deviation 3: GT is the letter 'A', options are text-valued ('A. yes'/'B. no'),
+    and the model (correctly) answers with the option text, not the letter."""
+    row = ego3d.ego3d_process_results(YESNO_DOC_A, ["<answer>yes</answer>"])["ego3d_score"]
+    assert row["accuracy"] == 1.0
+
+
+def test_process_results_credits_no_answer_text_against_letter_b_ground_truth():
+    row = ego3d.ego3d_process_results(YESNO_DOC_B, ["<answer>no</answer>"])["ego3d_score"]
+    assert row["accuracy"] == 1.0
+
+
+def test_process_results_still_scores_wrong_when_text_answer_mismatches_ground_truth():
+    """'yes' resolves to letter 'A', which is wrong against GT 'B'."""
+    row = ego3d.ego3d_process_results(YESNO_DOC_B, ["<answer>yes</answer>"])["ego3d_score"]
+    assert row["accuracy"] == 0.0
+
+
+def test_process_results_plain_letter_prediction_unchanged():
+    """A model that already answers with the letter must keep scoring exactly as before."""
+    correct = ego3d.ego3d_process_results(YESNO_DOC_A, ["<answer>A</answer>"])["ego3d_score"]
+    assert correct["accuracy"] == 1.0
+    wrong = ego3d.ego3d_process_results(YESNO_DOC_A, ["<answer>B</answer>"])["ego3d_score"]
+    assert wrong["accuracy"] == 0.0
+
+
+def test_process_results_no_options_key_behaves_as_before():
+    """MC_DOC carries no 'options' key at all (mirrors docs predating this fix /
+    categories with no text-valued options); option-text resolution must be a no-op."""
+    correct = ego3d.ego3d_process_results(MC_DOC, ["<answer>C</answer>"])["ego3d_score"]
+    assert correct["accuracy"] == 1.0
+    text_answer = ego3d.ego3d_process_results(MC_DOC, ["<answer>yes</answer>"])["ego3d_score"]
+    assert text_answer["accuracy"] == 0.0
 
 
 def test_process_results_squared_error_and_clipping():

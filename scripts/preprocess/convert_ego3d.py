@@ -138,6 +138,7 @@ def build_doc(sample):
             {"from": "gpt", "value": answer},
         ],
         "answer": answer,
+        "options": list(sample.get("options") or []),
         "baseline_prompt": baseline_prompt,
         "pointer_data": f"{POINTER_DIR}/{scene_id}.pt",
         "images": [f"{SCENES_DIR}/{scene_id}/{name}" for name in _link_names(sample)],
