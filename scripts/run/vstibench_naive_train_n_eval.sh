@@ -5,6 +5,7 @@
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1
 #SBATCH --export=ALL,MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/chanyoung/Cog3DMap
+#SBATCH --wckey=project-code:others
 
 # Experiment: VSTIBench with naive evaluation
 source venv/bin/activate
@@ -17,6 +18,7 @@ export DATASETS="vstibench"
 export USE_POINTER_MEMORY="False"
 export MERGE_MEMORY_FEAT="False"
 export MEMORY_FUSION_METHOD="add"
+export USE_PREPROCESSED_INPUT="False"
 
 # Evaluation
 export BENCHMARKS="vstibench"

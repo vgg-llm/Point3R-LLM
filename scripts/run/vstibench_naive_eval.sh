@@ -2,9 +2,10 @@
 #SBATCH --job-name=Cog3DMap_Rebuttal_Naive_Qwen3-VL_VSTI-bench_evaluation
 #SBATCH -o sbatch_log/vstibench-naive-Qwen3-VL-8b.%j.out
 #SBATCH --partition=cms_cvlab
-#SBATCH --gres=gpu:8
+#SBATCH --gres=gpu:4
 #SBATCH --nodes=1
 #SBATCH --export=ALL,MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/chanyoung/Cog3DMap
+#SBATCH --wckey=project-code:others
 
 # Experiment: VSTIBench with naive evaluation
 source venv/bin/activate
