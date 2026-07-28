@@ -103,3 +103,109 @@ def scene_id_of(sample):
     if not front:
         raise ValueError(f"sample {sample['idx']} has no Front view")
     return Path(front).stem
+
+
+POINTER_DIR = "ego3d/pointer_memory_qwen3vl"
+SCENES_DIR = "ego3d/scenes"
+
+
+def build_scene(sample):
+    """Return {scene_id, source, image_names} with names in canonical view order."""
+    source = sample["source"]
+    keys = VIEW_ORDER.get(source) or [k for k, v in sample["images"].items() if v]
+    names = [sample["images"][key] for key in keys]
+    if not all(names):
+        raise ValueError(f"sample {sample['idx']} missing an image for source {source}")
+    return {"scene_id": scene_id_of(sample), "source": source, "image_names": names}
+
+
+def _link_names(sample):
+    """Return ordered symlink filenames: 00_<View_Key>.jpg, 01_..., preserving suffix."""
+    source = sample["source"]
+    keys = VIEW_ORDER.get(source) or [k for k, v in sample["images"].items() if v]
+    suffixes = [Path(sample["images"][key]).suffix for key in keys]
+    return [f"{i:02d}_{key}{suffix}" for i, (key, suffix) in enumerate(zip(keys, suffixes))]
+
+
+def build_doc(sample):
+    pointer_prompt, baseline_prompt = build_prompts(sample)
+    scene_id = scene_id_of(sample)
+    category = sample["category"]
+    answer = str(sample["answer"])
+    return {
+        "conversations": [
+            {"from": "human", "value": pointer_prompt},
+            {"from": "gpt", "value": answer},
+        ],
+        "answer": answer,
+        "baseline_prompt": baseline_prompt,
+        "pointer_data": f"{POINTER_DIR}/{scene_id}.pt",
+        "images": [f"{SCENES_DIR}/{scene_id}/{name}" for name in _link_names(sample)],
+        "metadata": {
+            "idx": int(sample["idx"]),
+            "source": sample["source"],
+            "category": category,
+            "scene_id": scene_id,
+            "question_type": (
+                "exact_number" if category in EXACT_NUMBER_CATEGORIES else "multi_choice"
+            ),
+        },
+    }
+
+
+def link_scene(scene, image_root, scenes_root):
+    """Create <scenes_root>/<scene_id>/NN_<View>.jpg symlinks. Returns the scene dir."""
+    keys = VIEW_ORDER[scene["source"]]
+    scene_dir = Path(scenes_root) / scene["scene_id"]
+    scene_dir.mkdir(parents=True, exist_ok=True)
+    for i, (key, name) in enumerate(zip(keys, scene["image_names"])):
+        source_path = Path(image_root) / name
+        if not source_path.exists():
+            raise FileNotFoundError(f"missing Ego3D-Bench image: {source_path}")
+        link_path = scene_dir / f"{i:02d}_{key}{source_path.suffix}"
+        if link_path.is_symlink() or link_path.exists():
+            link_path.unlink()
+        link_path.symlink_to(source_path.resolve())
+    return scene_dir
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", default="data/evaluation/ego3d_point3r",
+                        help="output dir for test.json and scenes.json")
+    parser.add_argument("--image-root", default="Ego3D-Bench/Ego3D-Bench/images",
+                        help="dir holding the extracted Ego3D-Bench images")
+    parser.add_argument("--scenes-root", default="data/media/ego3d/scenes",
+                        help="dir to create per-scene symlink dirs in")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="convert only the first N samples (smoke tests)")
+    args = parser.parse_args()
+
+    from datasets import load_dataset
+
+    dataset = load_dataset("vbdai/Ego3D-Bench")["test"]
+    if args.limit is not None:
+        dataset = dataset.select(range(args.limit))
+
+    docs, scenes = [], {}
+    for sample in dataset:
+        docs.append(build_doc(sample))
+        scene = build_scene(sample)
+        scenes[scene["scene_id"]] = scene
+
+    image_root = Path(args.image_root)
+    scenes_root = Path(args.scenes_root)
+    for scene in scenes.values():
+        link_scene(scene, image_root, scenes_root)
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "test.json").write_text(json.dumps(docs, indent=1))
+    (out_dir / "scenes.json").write_text(
+        json.dumps(sorted(scenes.values(), key=lambda s: s["scene_id"]), indent=1)
+    )
+    print(f"wrote {len(docs)} docs and {len(scenes)} scenes to {out_dir}")
+
+
+if __name__ == "__main__":
+    main()

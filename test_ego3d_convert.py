@@ -108,3 +108,62 @@ def test_build_prompts_rejects_label_mismatch():
 
 def test_scene_id_is_front_image_stem():
     assert scene_id_of(WAYMO_SAMPLE) == "seg_FRONT"
+
+
+from convert_ego3d import build_doc, build_scene, link_scene  # noqa: E402
+
+
+def test_build_doc_schema():
+    doc = build_doc(WAYMO_SAMPLE)
+    assert doc["answer"] == "A"
+    assert doc["conversations"][0]["from"] == "human"
+    assert "<|pointer_pad|>" in doc["conversations"][0]["value"]
+    assert doc["conversations"][1]["value"] == "A"
+    assert "<|pointer_pad|>" not in doc["baseline_prompt"]
+    assert doc["pointer_data"] == "ego3d/pointer_memory_qwen3vl/seg_FRONT.pt"
+    assert doc["images"][0] == "ego3d/scenes/seg_FRONT/00_Front.jpg"
+    assert len(doc["images"]) == 5
+    assert doc["metadata"]["question_type"] == "multi_choice"
+    assert doc["metadata"]["scene_id"] == "seg_FRONT"
+
+
+def test_build_doc_marks_absolute_distance_as_exact_number():
+    sample = dict(WAYMO_SAMPLE, category="Ego_Centric_Absolute_Distance",
+                  options=None, answer="13.7")
+    doc = build_doc(sample)
+    assert doc["metadata"]["question_type"] == "exact_number"
+    assert doc["answer"] == "13.7"
+
+
+def test_build_scene_orders_names_canonically():
+    scene = build_scene(WAYMO_SAMPLE)
+    assert scene["scene_id"] == "seg_FRONT"
+    assert scene["image_names"] == [
+        "seg_FRONT.jpg", "seg_FRONT_LEFT.jpg", "seg_SIDE_LEFT.jpg",
+        "seg_FRONT_RIGHT.jpg", "seg_SIDE_RIGHT.jpg",
+    ]
+
+
+def test_link_scene_creates_ordered_symlinks(tmp_path):
+    image_root = tmp_path / "images"
+    image_root.mkdir()
+    for name in build_scene(WAYMO_SAMPLE)["image_names"]:
+        (image_root / name).write_bytes(b"fake")
+
+    scenes_root = tmp_path / "scenes"
+    scene_dir = link_scene(build_scene(WAYMO_SAMPLE), image_root, scenes_root)
+
+    linked = sorted(p.name for p in scene_dir.iterdir())
+    assert linked == [
+        "00_Front.jpg", "01_Front_Left.jpg", "02_Side_Left.jpg",
+        "03_Front_Right.jpg", "04_Side_Right.jpg",
+    ]
+    assert all((scene_dir / name).is_symlink() for name in linked)
+    assert (scene_dir / "00_Front.jpg").resolve() == (image_root / "seg_FRONT.jpg").resolve()
+
+
+def test_link_scene_fails_loudly_on_missing_image(tmp_path):
+    image_root = tmp_path / "images"
+    image_root.mkdir()
+    with pytest.raises(FileNotFoundError, match="seg_FRONT.jpg"):
+        link_scene(build_scene(WAYMO_SAMPLE), image_root, tmp_path / "scenes")
