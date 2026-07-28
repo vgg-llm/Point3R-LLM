@@ -348,6 +348,11 @@ def cli_evaluate(args: Union[argparse.Namespace, None] = None) -> None:
                 traceback.print_exc()
                 eval_logger.error(f"Error during evaluation: {e}. Please set `--verbosity=DEBUG` to get more information.")
                 results_list.append(None)
+                # Exit nonzero so `accelerate launch` tears down the remaining ranks.
+                # Otherwise this rank exits cleanly while the others block forever on
+                # a collective (e.g. the barrier in Task.download) and the job hangs
+                # until the scheduler's wall clock kills it.
+                sys.exit(1)
 
     for args, results in zip(args_list, results_list):
         # cli_evaluate will return none if the process is not the main process (rank 0)

@@ -1,8 +1,8 @@
 dataset_path: data/vstibench
 dataset_kwargs:
   token: True
-  cache_dir: vstibench
-  video: True
+  data_files:
+    test: test.json
 task: vstibench
 test_split: test
 output_type: generate_until

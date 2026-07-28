@@ -13,7 +13,7 @@
 # For a full list of configurable parameters, see the "Defaults" section below.
 # =============================================================================
 
-set -e
+set -eo pipefail
 
 # =============================================================================
 # Defaults
@@ -96,6 +96,47 @@ fi
 # --- Extra model args passthrough ---
 if [[ -n "$EXTRA_MODEL_ARGS" ]]; then
     model_args_str="${model_args_str},${EXTRA_MODEL_ARGS}"
+fi
+
+# =============================================================================
+# Preflight: verify each task's dataset resolves before allocating GPUs
+# =============================================================================
+# A missing local dataset dir otherwise surfaces deep inside Task.download() on
+# rank 0 only, after every rank has spun up; the surviving ranks then block on a
+# collective and the job hangs until the scheduler kills it.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+preflight_failed=0
+for task in ${BENCHMARKS//,/ }; do
+    task_yaml="${REPO_ROOT}/src/lmms_eval/tasks/${task}/${task}.yaml"
+    if [[ ! -f "$task_yaml" ]]; then
+        echo "WARNING: no task yaml at src/lmms_eval/tasks/${task}/${task}.yaml (group task?); skipping preflight for '${task}'." >&2
+        continue
+    fi
+    # `|| true`: grep exits 1 when absent, which pipefail + set -e would turn into
+    # a silent script abort before the clearer error below can be printed.
+    dataset_path="$({ grep -m1 '^dataset_path:' "$task_yaml" || true; } | sed 's/^dataset_path:[[:space:]]*//' | tr -d '"'"'"' \r')"
+    if [[ -z "$dataset_path" ]]; then
+        echo "ERROR: task '${task}' has no dataset_path in ${task_yaml}." >&2
+        preflight_failed=1
+        continue
+    fi
+    # Local path (relative to repo root or absolute) must exist on disk.
+    if [[ "$dataset_path" == /* || "$dataset_path" == .* || "$dataset_path" == data/* ]]; then
+        abs_path="$dataset_path"
+        [[ "$abs_path" != /* ]] && abs_path="${REPO_ROOT}/${dataset_path}"
+        if [[ ! -e "$abs_path" ]]; then
+            echo "ERROR: task '${task}' expects local dataset at '${dataset_path}' but it does not exist (${abs_path})." >&2
+            preflight_failed=1
+        else
+            echo "[preflight] ${task}: local dataset OK (${dataset_path})"
+        fi
+    else
+        echo "[preflight] ${task}: hub dataset '${dataset_path}' (not checked offline)"
+    fi
+done
+if [[ "$preflight_failed" -ne 0 ]]; then
+    echo "ERROR: dataset preflight failed; aborting before launch." >&2
+    exit 1
 fi
 
 # =============================================================================

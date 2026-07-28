@@ -14,6 +14,7 @@ export MODEL_PATH="Qwen/Qwen3-VL-8B-Instruct"
 export DATASETS="vstibench"
 
 # Memory features
+export USE_POINTER_MEMORY="False"
 export MERGE_MEMORY_FEAT="False"
 export MEMORY_FUSION_METHOD="add"
 

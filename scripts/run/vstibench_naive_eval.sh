@@ -14,6 +14,7 @@ export MODEL_PATH="Qwen/Qwen3-VL-8B-Instruct"
 export DATASETS="vstibench"
 
 # Memory features
+export USE_POINTER_MEMORY="False"
 export MERGE_MEMORY_FEAT="False"
 export MEMORY_FUSION_METHOD="add"
 
@@ -26,10 +27,11 @@ export LOG_SUFFIX="vstibench_eval"
 # bash scripts/train/train.sh
 
 # --- Evaluate ---
-export MODEL_PATH="${MODEL_OUTPUT_DIR}/${EXP_NAME}"
+# export MODEL_PATH="${MODEL_OUTPUT_DIR}/${EXP_NAME}"
+export USE_PREPROCESSED_INPUT="False"
 bash scripts/evaluation/eval.sh
 
 nvidia-smi
 date
-squeue --job $SLURM_JOBID
+# squeue --job $SLURM_JOBID
 echo "##### END #####"
