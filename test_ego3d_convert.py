@@ -167,3 +167,67 @@ def test_link_scene_fails_loudly_on_missing_image(tmp_path):
     image_root.mkdir()
     with pytest.raises(FileNotFoundError, match="seg_FRONT.jpg"):
         link_scene(build_scene(WAYMO_SAMPLE), image_root, tmp_path / "scenes")
+
+
+from convert_ego3d import normalize_scene_resolution  # noqa: E402
+
+
+def _write_jpeg(path, size):
+    from PIL import Image
+    Image.new("RGB", size, (128, 128, 128)).save(path, "JPEG")
+
+
+def test_normalize_pads_mixed_resolution_scene_in_place(tmp_path):
+    from PIL import Image
+    scene = tmp_path / "waymo_scene"
+    scene.mkdir()
+    _write_jpeg(scene / "00_Front.jpg", (1920, 1280))
+    _write_jpeg(scene / "01_Side_Left.jpg", (1920, 886))
+
+    assert normalize_scene_resolution(scene) is True
+
+    sizes = {p.name: Image.open(p).size for p in sorted(scene.iterdir())}
+    assert sizes == {"00_Front.jpg": (1920, 1280), "01_Side_Left.jpg": (1920, 1280)}
+    # Padding is centered and black, so the top row of the padded view is black.
+    padded = Image.open(scene / "01_Side_Left.jpg")
+    assert padded.getpixel((960, 2)) == (0, 0, 0)
+    # And the original content survives in the middle.
+    assert padded.getpixel((960, 640)) != (0, 0, 0)
+
+
+def test_normalize_leaves_uniform_scene_untouched(tmp_path):
+    scene = tmp_path / "nuscenes_scene"
+    scene.mkdir()
+    _write_jpeg(scene / "00_Front.jpg", (1600, 900))
+    _write_jpeg(scene / "01_Back.jpg", (1600, 900))
+    before = {p.name: p.read_bytes() for p in scene.iterdir()}
+
+    assert normalize_scene_resolution(scene) is False
+
+    after = {p.name: p.read_bytes() for p in scene.iterdir()}
+    assert after == before
+
+
+def test_normalize_is_idempotent(tmp_path):
+    scene = tmp_path / "waymo_scene"
+    scene.mkdir()
+    _write_jpeg(scene / "00_Front.jpg", (1920, 1280))
+    _write_jpeg(scene / "01_Side_Left.jpg", (1920, 886))
+
+    assert normalize_scene_resolution(scene) is True
+    assert normalize_scene_resolution(scene) is False
+
+
+def test_normalize_replaces_symlink_with_real_file(tmp_path):
+    real = tmp_path / "real_side.jpg"
+    _write_jpeg(real, (1920, 886))
+    scene = tmp_path / "waymo_scene"
+    scene.mkdir()
+    _write_jpeg(scene / "00_Front.jpg", (1920, 1280))
+    (scene / "01_Side_Left.jpg").symlink_to(real)
+
+    normalize_scene_resolution(scene)
+
+    assert not (scene / "01_Side_Left.jpg").is_symlink()
+    from PIL import Image
+    assert Image.open(real).size == (1920, 886)  # source image untouched

@@ -169,6 +169,47 @@ def link_scene(scene, image_root, scenes_root):
     return scene_dir
 
 
+def normalize_scene_resolution(scene_dir):
+    """Pad every view in a scene dir to the scene's max width/height, black, centered.
+
+    Point3R asserts all views of a scene share one grid, but waymo rigs mix
+    1920x1280 and 1920x886 within a scene. Mirrors the semantics of
+    Ego3D-Bench/utils/common.py:pad_images. Padding replaces the symlink with a real
+    JPEG under the same name, so pointer extraction and the images baseline see
+    identical pixels. Returns True if anything was padded.
+    """
+    from PIL import Image, ImageOps
+
+    paths = sorted(p for p in Path(scene_dir).iterdir() if p.suffix.lower() == ".jpg")
+    sizes = {}
+    for path in paths:
+        with Image.open(path) as image:
+            sizes[path] = image.size
+    if len(set(sizes.values())) <= 1:
+        return False
+
+    max_width = max(width for width, _ in sizes.values())
+    max_height = max(height for _, height in sizes.values())
+
+    for path, (width, height) in sizes.items():
+        if (width, height) == (max_width, max_height):
+            continue
+        delta_w, delta_h = max_width - width, max_height - height
+        padding = (
+            delta_w // 2, delta_h // 2,
+            delta_w - delta_w // 2, delta_h - delta_h // 2,
+        )
+        with Image.open(path) as image:
+            padded = ImageOps.expand(image.convert("RGB"), padding, fill=0)
+        # Write to a temp path then replace, so the symlink is swapped atomically for a
+        # real file and an interrupted run cannot leave a half-written JPEG.
+        tmp_path = path.with_suffix(".jpg.tmp")
+        padded.save(tmp_path, "JPEG", quality=95)
+        path.unlink()
+        tmp_path.rename(path)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="data/evaluation/ego3d_point3r",
@@ -197,6 +238,10 @@ def main():
     scenes_root = Path(args.scenes_root)
     for scene in scenes.values():
         link_scene(scene, image_root, scenes_root)
+
+    padded = sum(normalize_scene_resolution(Path(scenes_root) / s["scene_id"])
+                 for s in scenes.values())
+    print(f"normalized {padded} scenes with mixed view resolutions")
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
