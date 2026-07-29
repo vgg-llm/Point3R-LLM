@@ -13,6 +13,14 @@ Deliberate deviations from upstream:
      for the three categories whose ground truth is a letter but whose options
      and prompt suffix are text-valued ("A. yes" / "B. no").
   4. Numeric predictions are clipped to [0, 100]; upstream only upper-clips at 100.
+  5. A leading option letter is recognized even when glued to the option text
+     with no separating space (e.g. "A.1 meter", "A.ego car", "B)", "D: 4 meters"),
+     not just when cleanly separated ("A. yes"). Guarded by the doc's own option
+     count so a text answer like "no"/"yes" is never misread as letter N/Y;
+     those still resolve through the option-TEXT matching in deviation 3.
+     Upstream's own scorer takes only the first whitespace token and has the
+     same glued-letter gap, so our port is strictly more permissive in what it
+     credits here.
 """
 
 import os
@@ -163,6 +171,32 @@ def _full_answer_span(text):
 
 _OPTION_LETTER_RE = re.compile(r"^\s*([A-Za-z])\s*[.)-]?\s*(.*)$")
 
+# A leading option letter, optionally glued to the option text via `.`, `)` or `:`
+# ("A.1 meter", "A.ego car", "B)", "D: 4 meters"), or bare ("C").
+_LEADING_OPTION_LETTER_RE = re.compile(r"^([a-z])[.):]?")
+
+
+def _resolve_option_letter(prediction, options):
+    """Return the lowercase option letter the prediction leads with, or None.
+
+    Guarded by the doc's own option count: a leading character is only accepted
+    as an option letter if it falls within `A..<len(options)>` for this doc.
+    Without that guard, a text answer like "no" would be misread as letter `N`
+    and "yes" as `Y`; those must fall through to option-TEXT matching instead
+    (see `_option_text_to_letter`).
+    """
+    num_options = len(options) if options else 0
+    if num_options == 0:
+        return None
+    token = extract_answer(prediction)
+    match = _LEADING_OPTION_LETTER_RE.match(token)
+    if not match:
+        return None
+    letter = match.group(1)
+    if ord(letter) - ord("a") < num_options:
+        return letter
+    return None
+
 
 def _option_text_to_letter(options):
     """Map each option's lowercased text (letter marker stripped) to its lowercased letter.
@@ -212,14 +246,22 @@ def ego3d_process_results(doc, results):
         row["squared_error"] = (predicted - target) ** 2
     else:
         target = str(doc["answer"]).strip().lower()
-        predicted = extract_answer(prediction)
+        options = doc.get("options")
+        # Deviation 5: the option letter may be glued to the option text with no
+        # separating space ("A.1 meter", "A.ego car") rather than cleanly separated
+        # ("A. yes"). Resolve a leading letter first, guarded by the doc's own
+        # option count so text answers like "no"/"yes" aren't misread as letters
+        # N/Y; only fall back to the bare extracted token if no valid letter leads.
+        predicted = _resolve_option_letter(prediction, options)
+        if predicted is None:
+            predicted = extract_answer(prediction)
         if predicted != target:
             # Deviation 3: some categories' options are text-valued (e.g. "A. yes" /
             # "B. no") while the ground truth is the option LETTER. A model that
             # (correctly) answers with the option text must not be scored wrong just
             # because it didn't echo the letter. Resolve the prediction against the
             # doc's own options generically, not just for yes/no.
-            option_map = _option_text_to_letter(doc.get("options"))
+            option_map = _option_text_to_letter(options)
             resolved = option_map.get(predicted)
             if resolved is None:
                 resolved = option_map.get(_full_answer_span(prediction))

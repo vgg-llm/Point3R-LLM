@@ -40,6 +40,18 @@ and pointer mode with `add_frame_id=true` so the visual tokens carry matching la
 4. Numeric predictions are clipped to `[0, 100]`; upstream only upper-clips at 100
    (no lower clip). Undocumented until now; strictly harsher for negative
    predictions (rare, but possible from a malformed extraction).
+5. The benchmark's own option strings are inconsistently formatted — some have a
+   space after the letter marker (`"A. yes"`), some don't (`"A.36 meters"`,
+   `"A.ego car"`) — and a model in pointer mode tends to echo the option text
+   verbatim, producing predictions like `"A.1 meter"` or `"A.ego car"` rather than
+   a bare letter or a cleanly separated one. We recognize a leading option letter
+   followed by an optional `.`, `)`, or `:` separator even when glued directly to
+   the option text, guarded by the doc's own option count (`A..<len(options)>`)
+   so that text answers such as `"no"`/`"yes"` are never misread as letters
+   `N`/`Y` — those still resolve through the deviation-3 option-TEXT matching.
+   Upstream's scorer (`Ego3D-Bench/utils/eval.py`) takes only the first
+   whitespace-delimited token and strips a trailing period, so it has this same
+   glued-letter gap; our port is therefore more permissive in what it credits.
 
 ## Reading the numbers
 

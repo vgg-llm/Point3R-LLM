@@ -138,6 +138,66 @@ def test_aggregate_reports_per_category_scores_rmse_and_floors():
     assert overall == 50.0  # one of two multi-choice correct, in percent
 
 
+FOUR_OPT_DOC = _doc(
+    "Object_Centric_Absolute_Distance_MultiChoice", "A", "multi_choice",
+    options=["A.36 meters", "B.25 meters", "C.13 meters", "D.3 meters"],
+)
+
+
+def test_process_results_letter_glued_to_option_text_no_separator():
+    """'A.1 meter' (no space after the marker) must resolve to letter A."""
+    row = ego3d.ego3d_process_results(FOUR_OPT_DOC, ["A.1 meter"])["ego3d_score"]
+    assert row["accuracy"] == 1.0
+    wrong_gt = _doc("Object_Centric_Absolute_Distance_MultiChoice", "B", "multi_choice",
+                     options=FOUR_OPT_DOC["options"])
+    row = ego3d.ego3d_process_results(wrong_gt, ["A.1 meter"])["ego3d_score"]
+    assert row["accuracy"] == 0.0
+
+
+def test_process_results_letter_glued_to_multiword_option_text():
+    """'A.ego car' (no space, multi-word option text) must resolve to letter A."""
+    row = ego3d.ego3d_process_results(YESNO_DOC_A, ["A.ego car"])["ego3d_score"]
+    assert row["accuracy"] == 1.0
+
+
+def test_process_results_letter_with_space_after_marker_regression():
+    """'A. yes' (space after marker, the format that already worked) must keep working."""
+    row = ego3d.ego3d_process_results(YESNO_DOC_A, ["A. yes"])["ego3d_score"]
+    assert row["accuracy"] == 1.0
+
+
+def test_process_results_option_text_only_still_resolves_via_text_path():
+    """Bare 'yes' (no letter at all) must still resolve via option-TEXT matching."""
+    row = ego3d.ego3d_process_results(YESNO_DOC_A, ["yes"])["ego3d_score"]
+    assert row["accuracy"] == 1.0
+
+
+def test_process_results_no_not_misparsed_as_letter_n():
+    """'no' must not be misread as option letter N; it must resolve to letter B via
+    option-TEXT matching against GT 'B'."""
+    row = ego3d.ego3d_process_results(YESNO_DOC_B, ["no"])["ego3d_score"]
+    assert row["accuracy"] == 1.0
+
+
+def test_process_results_letter_with_colon_separator():
+    """'D: 4 meters' (colon separator) must resolve to letter D."""
+    doc = _doc("Travel_Time", "D", "multi_choice",
+                options=["A.Less than 5 seconds", "B.5-10 seconds",
+                         "C.11-20 seconds", "D.More than 20 seconds"])
+    row = ego3d.ego3d_process_results(doc, ["D: 4 meters"])["ego3d_score"]
+    assert row["accuracy"] == 1.0
+
+
+def test_process_results_think_protocol_bare_letter_regression():
+    """Bare '<answer>C</answer>' with 4 options must still resolve to letter C
+    (the baseline run's think-protocol path)."""
+    row = ego3d.ego3d_process_results(FOUR_OPT_DOC, ["<think>reasoning</think><answer>C</answer>"])["ego3d_score"]
+    doc_gt_c = _doc("Object_Centric_Absolute_Distance_MultiChoice", "C", "multi_choice",
+                     options=FOUR_OPT_DOC["options"])
+    row = ego3d.ego3d_process_results(doc_gt_c, ["<think>reasoning</think><answer>C</answer>"])["ego3d_score"]
+    assert row["accuracy"] == 1.0
+
+
 def test_floor_tables_cover_all_ten_categories():
     assert len(ego3d.CHANCE_FLOORS) == 8
     assert len(ego3d.MAJORITY_FLOORS) == 8
