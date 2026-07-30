@@ -5,12 +5,14 @@
 #SBATCH --gres=gpu:4
 #SBATCH --nodes=1
 #SBATCH --export=ALL,MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/chanyoung/Cog3DMap
-#SBATCH --wckey=project-code:others
+#SBATCH --wckey=project-short-name:others
 
 # Experiment: VSTIBench with naive evaluation
 source venv/bin/activate
 
-export EXP_NAME="vstibench_naive_eval"
+export NUM_PROCESSES=4
+
+export EXP_NAME="vstibench_naive_train_n_eval"
 export MODEL_PATH="Qwen/Qwen3-VL-8B-Instruct"
 export DATASETS="vstibench"
 
@@ -25,13 +27,11 @@ export BENCHMARKS="vstibench"
 export EVAL_MODEL_TYPE="point3r_llm_v2"
 export LOG_SUFFIX="vstibench_eval"
 
-export NUM_PROCESSES=4
-
 # --- Train ---
-# bash scripts/train/train.sh
+bash scripts/train/train.sh
 
 # --- Evaluate ---
-# export MODEL_PATH="${MODEL_OUTPUT_DIR}/${EXP_NAME}"
+export MODEL_PATH="${MODEL_OUTPUT_DIR}/${EXP_NAME}"
 bash scripts/evaluation/eval.sh
 
 nvidia-smi

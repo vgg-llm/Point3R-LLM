@@ -10,6 +10,8 @@
 # Experiment: VSTIBench with naive evaluation
 source venv/bin/activate
 
+export NUM_PROCESSES=4
+
 export EXP_NAME="vstibench_naive_eval"
 export MODEL_PATH="Qwen/Qwen3-VL-8B-Instruct"
 export DATASETS="vstibench"
@@ -24,15 +26,12 @@ export MEMORY_FUSION_METHOD="add"
 export BENCHMARKS="vstibench"
 export EVAL_MODEL_TYPE="point3r_llm_v2"
 export LOG_SUFFIX="vstibench_eval"
-# Must match --gres=gpu:4 above; eval.sh otherwise defaults to 8 ranks and
-# ranks 4-7 crash with "CUDA error: invalid device ordinal".
-export NUM_PROCESSES=4
 
 # --- Train ---
 # bash scripts/train/train.sh
 
 # --- Evaluate ---
-# export MODEL_PATH="${MODEL_OUTPUT_DIR}/${EXP_NAME}"
+export MODEL_PATH="${MODEL_OUTPUT_DIR}/vsibench_naive_ckpt-8000"
 bash scripts/evaluation/eval.sh
 
 nvidia-smi

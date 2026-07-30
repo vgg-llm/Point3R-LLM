@@ -5,16 +5,19 @@
 #SBATCH --gres=gpu:8
 #SBATCH --nodes=1
 #SBATCH --export=ALL,MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/chanyoung/Cog3DMap
-#SBATCH --wckey=project-code:others
+#SBATCH --wckey=project-short-name:others
 
 # Experiment: VSTIBench with naive evaluation
 source venv/bin/activate
 
-export EXP_NAME="vsibench_naive_eval"
+export NUM_PROCESSES=8
+
+export EXP_NAME="vsibench_naive_train_n_eval_8gpu"
 export MODEL_PATH="Qwen/Qwen3-VL-8B-Instruct"
 export DATASETS="vsibench"
 
 # Memory features
+export USE_POINTER_MEMORY="False"
 export USE_PREPROCESSED_INPUT="False"
 export MERGE_MEMORY_FEAT="False"
 export MEMORY_FUSION_METHOD="add"

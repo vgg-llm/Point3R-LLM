@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:4
 #SBATCH --nodes=1
 #SBATCH --export=ALL,MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/chanyoung/Cog3DMap
-#SBATCH --wckey=project-code:others
+#SBATCH --wckey=project-short-name:others
 
 # Experiment: VSTIBench with naive evaluation
 source venv/bin/activate
@@ -16,6 +16,7 @@ export DATASETS="vstibench"
 
 # Memory features
 export USE_POINTER_MEMORY="False"
+export USE_PREPROCESSED_INPUT="False"
 export MERGE_MEMORY_FEAT="False"
 export MEMORY_FUSION_METHOD="add"
 
@@ -32,7 +33,6 @@ export NUM_PROCESSES=4
 
 # --- Evaluate ---
 # export MODEL_PATH="${MODEL_OUTPUT_DIR}/${EXP_NAME}"
-export USE_PREPROCESSED_INPUT="False"
 bash scripts/evaluation/eval.sh
 
 nvidia-smi
