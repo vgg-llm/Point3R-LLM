@@ -11,10 +11,43 @@ Waymo and Argoverse. Test split only — the benchmark ships no training data.
 | `ego3d_point3r` | pointer tokens | short answers | main Point3R run |
 | `ego3d_point3r_think` | pointer tokens | official `<think>/<answer>` | protocol-matched comparison |
 
-Prompts are identical across modes except for the `<|pointer_pad|>` line, so a
-baseline/pointer comparison varies the visual substrate and nothing else. Views are
-named `Frame-0..N` in a manifest header; run the baseline with `add_frame_index=true`
-and pointer mode with `add_frame_id=true` so the visual tokens carry matching labels.
+The three tasks share `ego3d_default_yaml` via `include:`; each task yaml overrides
+only the visual substrate, the generation length and the protocol.
+
+### Prompts are NOT identical across modes
+
+Both prompts carry the same question body and options, and a manifest header naming
+each camera view. They differ in two ways, both forced by the visual substrate:
+
+| | pointer modes | `ego3d_baseline` |
+|---|---|---|
+| pointer-pad line | `<|pointer_pad|>` present | absent |
+| manifest frame labels | `<frame-1>..<frame-N>` | `Frame-0..Frame-N-1` |
+
+The frame labels must match how the wrapper actually labels the visual tokens, and the
+two wrappers disagree: `src/qwen_vl/data/pointer_data.py` (`add_frame_id=true`) groups
+pointer tokens as `<frame-1>`, `<frame-2>`, ... (1-indexed, bracketed, lowercase),
+while `src/lmms_eval/models/point3r_llm_v2.py` (`add_frame_index=true`) prefixes each
+image with `Frame-0: `, `Frame-1: `, ... (0-indexed). So a baseline/pointer comparison
+varies the visual substrate **plus the frame-naming that substrate dictates** — it is
+not a single-line delta. Run the baseline with `add_frame_index=true` and pointer mode
+with `add_frame_id=true`, as `scripts/run/ego3d_eval.sh` does.
+
+### The default baseline/pointer comparison also varies the WEIGHTS
+
+`scripts/run/ego3d_eval.sh` defaults to *different checkpoints* per mode:
+
+| Mode | Default checkpoint |
+|---|---|
+| `baseline` | stock `Qwen/Qwen3-VL-4B-Instruct` |
+| `pointer`, `pointer_think` | `./outputs/scan2cap_point3r_Qwen3VL_memfeat_lambda0.5` (finetuned) |
+
+Any headline gap between those two runs therefore mixes a weights difference with the
+substrate difference and is **not** a measurement of the pointer substrate. Every mode
+honors `MODEL_PATH`, so hold the weights fixed for a controlled comparison:
+
+    MODEL_PATH=./outputs/scan2cap_point3r_Qwen3VL_memfeat_lambda0.5 \
+        bash scripts/run/ego3d_eval.sh baseline
 
 ## Setup
 
@@ -52,6 +85,23 @@ and pointer mode with `add_frame_id=true` so the visual tokens carry matching la
    Upstream's scorer (`Ego3D-Bench/utils/eval.py`) takes only the first
    whitespace-delimited token and strips a trailing period, so it has this same
    glued-letter gap; our port is therefore more permissive in what it credits.
+   The leading letter must END the token or be followed by a non-letter, so free
+   text (`"approximately 12 meters"`, `"cannot determine"`) is never credited as
+   option `A`/`C`. Wrapping punctuation (`.,;:!*)"'`) is stripped from both ends of
+   the token and of the full span, so `"**B**"` and
+   `"yes, it is moving toward the ego car"` resolve to `B` and `A`. As a last
+   resort a bracketed/starred or span-final option letter is accepted
+   (`"the answer is (B)."`), guarded by the doc's option count.
+6. A numeric answer is only read from a properly CLOSED `<answer></answer>` span
+   under the think protocol (`utils.ego3d_process_results_think`, wired by
+   `ego3d_baseline.yaml` and `ego3d_point3r_think.yaml`); the short protocol, which
+   asks for "a single word or phrase" and caps generation at 16 tokens, is also read
+   untagged. A think response truncated at the 1024-token cap therefore scores the
+   worst case (deviation 1) instead of having a number mined out of its reasoning.
+   The number regex additionally refuses a digit glued to a word character, `.` or
+   `-`, so a `Frame-1` / `<frame-1>` reference can never be read as the number `-1`.
+   Strictly harsher than upstream, and it invalidates any RMSE produced before this
+   fix: the pre-fix baseline RMSEs were shaped by numbers mined from reasoning.
 
 ## Reading the numbers
 

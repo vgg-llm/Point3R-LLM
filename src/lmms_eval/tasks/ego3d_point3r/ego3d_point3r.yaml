@@ -1,27 +1,17 @@
-dataset_path: data/evaluation/ego3d_point3r
-dataset_kwargs:
-  token: True
+include: ego3d_default_yaml
 task: ego3d_point3r
-test_split: test
-output_type: generate_until
+# Pointer substrate: no images; the scene arrives as pointer tokens grouped as
+# "<frame-1>".. by pointer_data.py's add_frame_id.
 doc_to_visual: !function utils.ego3d_doc_to_visual_pointer
-doc_to_text: !function utils.ego3d_doc_to_text
-doc_to_target: "answer"
+# Short protocol answers in a word or a phrase, so the whole generation budget is 16
+# tokens. Restated in full because include-merging is a shallow dict update.
 generation_kwargs:
   max_new_tokens: 16
   temperature: 0
   top_p: 1.0
   num_beams: 1
   do_sample: false
-process_results: !function utils.ego3d_process_results
-metric_list:
-  - metric: ego3d_score
-    aggregation: !function utils.ego3d_aggregate_results
-    higher_is_better: true
 lmms_eval_specific_kwargs:
   default:
     protocol: "short"
     visual_mode: "pointer"
-metadata:
-  media_dir: data/media/
-  version: 0.0

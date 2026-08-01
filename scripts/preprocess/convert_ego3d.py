@@ -39,6 +39,9 @@ EXPECTED_LABELS = {
     ],
 }
 
+# Intentionally duplicated in src/lmms_eval/tasks/ego3d_point3r/utils.py: this
+# converter must stay importable without src/lmms_eval on the path (it runs before
+# any eval, in a plain `datasets`+PIL environment), so it cannot import from there.
 EXACT_NUMBER_CATEGORIES = {
     "Ego_Centric_Absolute_Distance",
     "Object_Centric_Absolute_Distance",
@@ -65,20 +68,48 @@ def strip_question(question):
     return question.split("<image>")[-1].strip()
 
 
-def build_manifest(labels):
+# The manifest must name the frames exactly as the model wrapper labels them, and the
+# two visual substrates label them differently:
+#   IMAGES  path: src/lmms_eval/models/point3r_llm_v2.py (add_frame_index=true) emits
+#                 "Frame-0: ", "Frame-1: ", ... -> 0-indexed, capital F, no brackets.
+#   POINTER path: src/qwen_vl/data/pointer_data.py (add_frame_id=true) emits
+#                 "<frame-1>", "<frame-2>", ... -> 1-indexed, lowercase f, brackets.
+# Both are the models' contract; the prompt adapts to the model, not the reverse.
+BASELINE_FRAME_LABEL = "Frame-{index}"
+BASELINE_INDEX_BASE = 0
+POINTER_FRAME_LABEL = "<frame-{index}>"
+POINTER_INDEX_BASE = 1
+
+
+def build_manifest(labels, index_base=BASELINE_INDEX_BASE,
+                   label_template=BASELINE_FRAME_LABEL):
+    """Return the manifest header naming each view, one line per view.
+
+    `index_base` and `label_template` select the frame-naming style of the visual
+    substrate the prompt is for (see BASELINE_/POINTER_FRAME_LABEL above). Defaults
+    to the images/baseline style.
+    """
     lines = [
         f"The scene is provided as {len(labels)} camera views mounted on an ego car, "
         "in this order:"
     ]
-    lines += [f"  Frame-{i}: {label}" for i, label in enumerate(labels)]
+    lines += [
+        f"  {label_template.format(index=i + index_base)}: {label}"
+        for i, label in enumerate(labels)
+    ]
     return "\n".join(lines)
 
 
 def build_prompts(sample):
     """Return (pointer_prompt, baseline_prompt).
 
-    The two differ only by the pointer-pad line, so a baseline/pointer comparison
-    varies the visual substrate and nothing else.
+    The two share the same question body and options, and differ in exactly the two
+    ways the visual substrate forces them to: the pointer prompt carries the
+    `<|pointer_pad|>` line, and its manifest names frames `<frame-1>..<frame-N>` to
+    match the pointer token groups, where the baseline manifest names them
+    `Frame-0..Frame-N-1` to match the per-image text labels. A baseline/pointer
+    comparison therefore varies the visual substrate plus the frame-naming those
+    substrates dictate -- it is not a single-line delta.
     """
     source = sample["source"]
     labels = parse_view_labels(sample["question"])
@@ -88,13 +119,16 @@ def build_prompts(sample):
             f"label mismatch for source {source}: parsed {labels}, expected {expected}"
         )
 
-    manifest = build_manifest(labels)
     body = strip_question(sample["question"])
     options = sample.get("options") or []
     tail = "\n".join([body] + list(options))
 
-    baseline_prompt = f"{manifest}\n\n{tail}"
-    pointer_prompt = f"{manifest}\n{POINTER_PAD}\n\n{tail}"
+    baseline_manifest = build_manifest(labels)
+    pointer_manifest = build_manifest(
+        labels, index_base=POINTER_INDEX_BASE, label_template=POINTER_FRAME_LABEL
+    )
+    baseline_prompt = f"{baseline_manifest}\n\n{tail}"
+    pointer_prompt = f"{pointer_manifest}\n{POINTER_PAD}\n\n{tail}"
     return pointer_prompt, baseline_prompt
 
 
@@ -111,8 +145,11 @@ SCENES_DIR = "ego3d/scenes"
 
 def build_scene(sample):
     """Return {scene_id, source, image_names} with names in canonical view order."""
+    # VIEW_ORDER[source], not .get(): link_scene indexes it directly, so an unknown
+    # source must fail here too rather than half-succeeding with a guessed key order
+    # that link_scene would then reject (or, worse, mislabel).
     source = sample["source"]
-    keys = VIEW_ORDER.get(source) or [k for k, v in sample["images"].items() if v]
+    keys = VIEW_ORDER[source]
     names = [sample["images"][key] for key in keys]
     if not all(names):
         raise ValueError(f"sample {sample['idx']} missing an image for source {source}")
@@ -121,8 +158,7 @@ def build_scene(sample):
 
 def _link_names(sample):
     """Return ordered symlink filenames: 00_<View_Key>.jpg, 01_..., preserving suffix."""
-    source = sample["source"]
-    keys = VIEW_ORDER.get(source) or [k for k, v in sample["images"].items() if v]
+    keys = VIEW_ORDER[sample["source"]]
     suffixes = [Path(sample["images"][key]).suffix for key in keys]
     return [f"{i:02d}_{key}{suffix}" for i, (key, suffix) in enumerate(zip(keys, suffixes))]
 

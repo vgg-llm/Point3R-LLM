@@ -1,0 +1,27 @@
+# Shared configuration for the three Ego3D-Bench tasks. Each task yaml `include:`s
+# this file and overrides only what actually differs (task name, visual substrate,
+# generation length, protocol). Note that include-merging is a shallow dict update,
+# so an overriding yaml must restate a whole mapping (e.g. all of generation_kwargs).
+dataset_path: data/evaluation/ego3d_point3r
+dataset_kwargs:
+  token: True
+test_split: test
+output_type: generate_until
+doc_to_text: !function utils.ego3d_doc_to_text
+doc_to_target: "answer"
+generation_kwargs:
+  max_new_tokens: 1024
+  temperature: 0
+  top_p: 1.0
+  num_beams: 1
+  do_sample: false
+# Short protocol by default; the two think tasks override this with
+# utils.ego3d_process_results_think (which requires a closed <answer> span).
+process_results: !function utils.ego3d_process_results
+metric_list:
+  - metric: ego3d_score
+    aggregation: !function utils.ego3d_aggregate_results
+    higher_is_better: true
+metadata:
+  media_dir: data/media/
+  version: 0.0

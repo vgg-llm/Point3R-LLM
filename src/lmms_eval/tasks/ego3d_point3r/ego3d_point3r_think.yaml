@@ -1,27 +1,9 @@
-dataset_path: data/evaluation/ego3d_point3r
-dataset_kwargs:
-  token: True
+include: ego3d_default_yaml
 task: ego3d_point3r_think
-test_split: test
-output_type: generate_until
 doc_to_visual: !function utils.ego3d_doc_to_visual_pointer
-doc_to_text: !function utils.ego3d_doc_to_text
-doc_to_target: "answer"
-generation_kwargs:
-  max_new_tokens: 1024
-  temperature: 0
-  top_p: 1.0
-  num_beams: 1
-  do_sample: false
-process_results: !function utils.ego3d_process_results
-metric_list:
-  - metric: ego3d_score
-    aggregation: !function utils.ego3d_aggregate_results
-    higher_is_better: true
+# think protocol: a numeric answer must arrive in a closed <answer></answer> span.
+process_results: !function utils.ego3d_process_results_think
 lmms_eval_specific_kwargs:
   default:
     protocol: "think"
     visual_mode: "pointer"
-metadata:
-  media_dir: data/media/
-  version: 0.0

@@ -45,6 +45,34 @@ def _unwrap(value):
     return value
 
 
+_THINK_SUFFIXES = (
+    ego3d.THINK_SUFFIX_NUMBER,
+    ego3d.THINK_SUFFIX_YESNO,
+    ego3d.THINK_SUFFIX_LETTER,
+)
+_SHORT_SUFFIXES = (ego3d.SHORT_SUFFIX_NUMBER, ego3d.SHORT_SUFFIX_LETTER)
+
+
+def _requires_answer_tag(sample, samples_path, line_no):
+    """Read the protocol back off the saved prompt.
+
+    The scorer treats numeric answers differently under the two protocols (a think
+    response with no closed <answer> span is unfinished reasoning, not an answer), and
+    lmms_eval selects that per task via `ego3d_process_results_think`. A samples file
+    records the rendered prompt in `input`, whose suffix names the protocol exactly, so
+    rescoring does not have to be told which run it is looking at.
+    """
+    prompt = (sample.get("input") or "").rstrip()
+    if prompt.endswith(tuple(s.strip() for s in _THINK_SUFFIXES)):
+        return True
+    if prompt.endswith(tuple(s.strip() for s in _SHORT_SUFFIXES)):
+        return False
+    raise ValueError(
+        f"{samples_path}:{line_no}: cannot tell the protocol from the saved prompt; "
+        "its suffix matches neither the think nor the short protocol"
+    )
+
+
 def _doc_key(metadata):
     """Unique doc identity: `metadata.idx` alone repeats across (source, category)."""
     return (metadata["source"], metadata["category"], metadata["idx"])
@@ -55,7 +83,12 @@ def load_docs_by_idx(docs_path):
         docs = json.load(f)
     by_key = {}
     for doc in docs:
-        by_key[_doc_key(doc["metadata"])] = doc
+        key = _doc_key(doc["metadata"])
+        # The (source, category, idx) triple is the join key; if it ever stops being
+        # unique, docs would silently shadow each other and samples would be rescored
+        # against the wrong doc (wrong options -> wrong accuracy).
+        assert key not in by_key, f"{docs_path}: duplicate doc key {key}"
+        by_key[key] = doc
     return by_key
 
 
@@ -81,13 +114,51 @@ def load_samples(samples_path, docs_by_idx, docs_path):
                 prediction_field = sample.get("resps")
             if prediction_field is None:
                 raise KeyError(
-                    f"{samples_path}:{line_no}: sample idx {idx} has neither "
-                    "filtered_resps nor resps"
+                    f"{samples_path}:{line_no}: sample with (source, category, idx) "
+                    f"= {key} has neither filtered_resps nor resps"
                 )
             prediction = _unwrap(prediction_field)
 
-            rows.append(ego3d.ego3d_process_results(doc, [prediction])["ego3d_score"])
+            require_answer_tag = _requires_answer_tag(sample, samples_path, line_no)
+            rows.append(
+                ego3d.ego3d_process_results(
+                    doc, [prediction], require_answer_tag=require_answer_tag
+                )["ego3d_score"]
+            )
     return rows
+
+
+EXPECTED_CATEGORIES = 10
+
+
+def warn_if_partial(rows, num_docs):
+    """Warn loudly when the rescored rows are not the full benchmark.
+
+    The printed mean looks like a benchmark number whatever subset it came from (a
+    --limit run, a crashed run, one shard). Anything less than every doc in every
+    category is NOT comparable to a reported Ego3D-Bench score.
+    """
+    categories = {row["category"] for row in rows}
+    warnings = []
+    if len(rows) != num_docs:
+        warnings.append(
+            f"rescored {len(rows)} samples but the docs file holds {num_docs}: "
+            "this is a PARTIAL run (--limit, a crash, or a single shard)"
+        )
+    if len(categories) < EXPECTED_CATEGORIES:
+        warnings.append(
+            f"only {len(categories)} of {EXPECTED_CATEGORIES} categories present: "
+            f"missing "
+            f"{sorted((set(ego3d.CHANCE_FLOORS) | set(ego3d.CONSTANT_RMSE_FLOORS)) - categories)}"
+        )
+    for warning in warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    if warnings:
+        print(
+            "WARNING: the mean below is NOT a benchmark number; it covers only the "
+            "rows present in this samples file.",
+            file=sys.stderr,
+        )
 
 
 def main():
@@ -104,6 +175,7 @@ def main():
     print(f"Rescored {len(rows)} samples against current utils.py scoring logic.\n")
     overall = ego3d.ego3d_aggregate_results(rows)
     print(f"\nEgo3D-Bench mean multi-choice accuracy: {overall:.2f}")
+    warn_if_partial(rows, len(docs_by_idx))
 
 
 if __name__ == "__main__":

@@ -20,7 +20,17 @@ Deliberate deviations from upstream:
      those still resolve through the option-TEXT matching in deviation 3.
      Upstream's own scorer takes only the first whitespace token and has the
      same glued-letter gap, so our port is strictly more permissive in what it
-     credits here.
+     credits here. The leading letter must END the token or be followed by a
+     non-letter, so free text ("approximately 12 meters", "cannot determine") is
+     never credited as option A / C. Wrapping punctuation is stripped from both
+     ends of the token and the span, so "**B**" and "yes, it is moving ..." are
+     matched as "b" and "yes".
+  6. A numeric answer is only read from a properly CLOSED <answer></answer> span,
+     or from an untagged response short enough to be the "single word or phrase"
+     the short protocol asks for. A think-protocol response truncated at the
+     generation cap therefore scores the documented worst case (deviation 1)
+     rather than having a number mined out of its reasoning -- where the number
+     regex would also have matched the `-1` inside a "Frame-1" reference.
 """
 
 import os
@@ -33,7 +43,8 @@ import yaml
 from loguru import logger as eval_logger
 from PIL import Image
 
-with open(Path(__file__).parent / "ego3d_point3r.yaml", "r") as f:
+# metadata lives in the shared ego3d_default_yaml that all three task yamls include.
+with open(Path(__file__).parent / "ego3d_default_yaml", "r") as f:
     _raw = [line for line in f.readlines() if "!function" not in line]
 media_dir = yaml.safe_load("".join(_raw))["metadata"]["media_dir"]
 
@@ -140,23 +151,58 @@ def ego3d_doc_to_visual_images(doc):
     return [images]
 
 
+# Punctuation a model wraps or trails its answer with: "yes,", "**B**", "(C)", "B."
+_ANSWER_PUNCTUATION = ".,;:!*)\"'"
+
+
+def _closed_answer_span(text):
+    """Return the content of a properly closed <answer>...</answer> span, else None.
+
+    Deviation 6: an OPEN-but-unclosed `<answer>` is treated as no answer at all. Under
+    the think protocol a response truncated at the generation cap has neither a closed
+    span nor a usable answer, and reading whatever follows the opening tag (or, worse,
+    the reasoning that precedes it) mines prose instead of scoring an answer.
+    """
+    if "<answer>" not in text:
+        return None
+    start = text.find("<answer>") + len("<answer>")
+    end = text.find("</answer>", start)
+    if end == -1:
+        return None
+    return text[start:end]
+
+
 def _answer_span(text):
-    """Return the <answer>...</answer> content if present, else the whole text."""
+    """Return the closed <answer> span, else the text after an unclosed opening tag,
+    else the whole text.
+
+    Multi-choice matching stays lenient about a missing closing tag (a truncated
+    "<answer>C" still names an option); only numeric extraction requires a closed
+    span, because there the fallback is prose-mining rather than a single token.
+    """
+    span = _closed_answer_span(text)
+    if span is not None:
+        return span
     if "<answer>" in text:
-        start = text.find("<answer>") + len("<answer>")
-        end = text.find("</answer>")
-        return text[start:end] if end != -1 else text[start:]
+        return text[text.find("<answer>") + len("<answer>"):]
     return text
+
+
+def _strip_answer_punctuation(token):
+    """Strip wrapping/trailing punctuation from both ends ("**B**" -> "B", "yes," -> "yes")."""
+    return token.strip().strip(_ANSWER_PUNCTUATION).strip()
 
 
 def extract_answer(text):
     """Return the comparable multi-choice answer, lowercased.
 
     Protocol-agnostic: reads the <answer> span when present, else the first token.
+    Surrounding punctuation is stripped from both ends, so "**B**", "yes," and "B."
+    all reduce to their bare token.
     """
     text = _answer_span(text)
     token = text.replace("\n", " ").strip().split(" ")[0]
-    return token.rstrip(".").strip().lower()
+    return _strip_answer_punctuation(token).lower()
 
 
 def _full_answer_span(text):
@@ -164,16 +210,30 @@ def _full_answer_span(text):
 
     Unlike extract_answer, this keeps multi-word spans intact so option text such
     as "yes" or, in principle, multi-word option text can be matched in full.
+    Surrounding punctuation is stripped from both ends.
     """
     text = _answer_span(text)
-    return " ".join(text.replace("\n", " ").strip().split()).rstrip(".").strip().lower()
+    normalized = " ".join(text.replace("\n", " ").strip().split())
+    return _strip_answer_punctuation(normalized).lower()
 
 
 _OPTION_LETTER_RE = re.compile(r"^\s*([A-Za-z])\s*[.)-]?\s*(.*)$")
 
-# A leading option letter, optionally glued to the option text via `.`, `)` or `:`
-# ("A.1 meter", "A.ego car", "B)", "D: 4 meters"), or bare ("C").
-_LEADING_OPTION_LETTER_RE = re.compile(r"^([a-z])[.):]?")
+# A leading option letter that is not merely the first letter of a word: the letter
+# must end the token or be followed by a non-letter. Credits "a" (bare), "a.1",
+# "a.ego car", "b)", "d:", "a," -- the letter/separator forms the benchmark's own
+# option strings and the models produce -- while refusing "approximately",
+# "between", "cannot", which would otherwise be read as options A, B and C.
+_LEADING_OPTION_LETTER_RE = re.compile(r"^([a-z])(?=$|[^a-z])")
+
+# Last-resort option-letter recognition inside a longer answer span: the letter must
+# be explicitly marked up ("(b)", "**b**", "[c]") or be the very last thing in the
+# span ("the answer is b."). Deliberately does NOT match a letter merely occurring as
+# a word, so the article "a" in "a black suv is closer" is never read as option A.
+_MARKED_OPTION_LETTER_RES = (
+    re.compile(r"[(\[*]\s*([a-z])\s*[)\]*.:,]"),
+    re.compile(r"(?:^|[\s:*(\[])([a-z])[.)\]*]?$"),
+)
 
 
 def _resolve_option_letter(prediction, options):
@@ -211,21 +271,54 @@ def _option_text_to_letter(options):
             letter, text = match.group(1), match.group(2)
             text = text.strip().lower()
             if text:
-                mapping[text] = letter.lower()
+                mapping[_strip_answer_punctuation(text)] = letter.lower()
     return mapping
 
 
-def extract_number(text):
-    """Return the first number in the text, or None."""
-    if "<answer>" in text:
-        start = text.find("<answer>") + len("<answer>")
-        end = text.find("</answer>")
-        text = text[start:end] if end != -1 else text[start:]
-    match = re.search(r"[-+]?\d*\.?\d+", text)
+def _marked_option_letter(prediction, options):
+    """Last resort: an explicitly marked or span-final option letter, or None.
+
+    Only fires when neither the leading-letter nor the option-TEXT path resolved the
+    prediction, and only for a letter that is in range for this doc's option count.
+    """
+    num_options = len(options) if options else 0
+    if num_options == 0:
+        return None
+    span = _full_answer_span(prediction)
+    for pattern in _MARKED_OPTION_LETTER_RES:
+        match = pattern.search(span)
+        if match and ord(match.group(1)) - ord("a") < num_options:
+            return match.group(1)
+    return None
+
+
+# A standalone number. The lookbehind refuses a digit glued to a word character, a
+# dot or a hyphen, so the frame labels the manifest introduces ("Frame-1", "<frame-1>")
+# cannot be read as the number -1, and "v2.5x" cannot be read as 2.5.
+_NUMBER_RE = re.compile(r"(?<![\w.-])[-+]?\d*\.?\d+")
+
+def extract_number(text, require_answer_tag=False):
+    """Return the number the response ANSWERS with, or None if it did not answer.
+
+    Deviation 6: a closed <answer></answer> span is required whenever the response
+    opens one, and required outright under the think protocol
+    (`require_answer_tag=True`, set per task -- see ego3d_process_results_think).
+    Under the think protocol a response with no closed span is unfinished reasoning,
+    so returning None makes `ego3d_process_results` apply the documented worst-case
+    rule instead of crediting whatever number the reasoning happened to mention.
+    Only the short protocol, which asks for "a single word or phrase" and caps
+    generation at 16 tokens, is read without any tag.
+    """
+    span = _closed_answer_span(text)
+    if span is None:
+        if require_answer_tag or "<answer>" in text:
+            return None
+        span = text
+    match = _NUMBER_RE.search(span)
     return float(match.group()) if match else None
 
 
-def ego3d_process_results(doc, results):
+def ego3d_process_results(doc, results, require_answer_tag=False):
     prediction = results[0]
     category = _category(doc)
     row = {
@@ -237,7 +330,7 @@ def ego3d_process_results(doc, results):
 
     if category in EXACT_NUMBER_CATEGORIES:
         target = float(doc["answer"])
-        predicted = extract_number(prediction)
+        predicted = extract_number(prediction, require_answer_tag=require_answer_tag)
         if predicted is None:
             # Deviation 1: worst case rather than dropped.
             predicted = MAX_DISTANCE_M
@@ -265,11 +358,24 @@ def ego3d_process_results(doc, results):
             resolved = option_map.get(predicted)
             if resolved is None:
                 resolved = option_map.get(_full_answer_span(prediction))
+            if resolved is None:
+                # Last resort: an explicitly marked or span-final option letter,
+                # e.g. "the answer is (B)." / "**B**" / "... so b".
+                resolved = _marked_option_letter(prediction, options)
             if resolved is not None:
                 predicted = resolved
         row["accuracy"] = float(predicted == target)
 
     return {"ego3d_score": row}
+
+
+def ego3d_process_results_think(doc, results):
+    """Scorer for the `<think>/<answer>` tasks: a numeric answer MUST be tagged.
+
+    lmms_eval does not pass `lmms_eval_specific_kwargs` to `process_results`, so the
+    protocol is selected by which of these two functions a task's yaml points at.
+    """
+    return ego3d_process_results(doc, results, require_answer_tag=True)
 
 
 def ego3d_aggregate_results(results):

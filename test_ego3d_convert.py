@@ -8,6 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent / "scripts" / "preprocess"))
 
 from convert_ego3d import (  # noqa: E402
     EXPECTED_LABELS,
+    POINTER_FRAME_LABEL,
+    POINTER_INDEX_BASE,
     VIEW_ORDER,
     build_manifest,
     build_prompts,
@@ -82,11 +84,42 @@ def test_strip_question_keeps_only_text_after_last_image():
     assert "Front Left view:" not in body
 
 
-def test_build_manifest_numbers_frames_from_zero():
+def test_build_manifest_numbers_frames_from_zero_by_default():
+    """Default style is the IMAGES path's: 0-indexed 'Frame-N', no brackets."""
     manifest = build_manifest(["Front", "Front Left"])
     assert "2 camera views" in manifest
     assert "Frame-0: Front" in manifest
     assert "Frame-1: Front Left" in manifest
+    assert "<frame" not in manifest
+
+
+def test_build_manifest_pointer_style_is_one_indexed_and_bracketed():
+    """The POINTER path emits '<frame-1>', '<frame-2>', ... (pointer_data.py:195)."""
+    manifest = build_manifest(
+        ["Front", "Front Left"],
+        index_base=POINTER_INDEX_BASE, label_template=POINTER_FRAME_LABEL,
+    )
+    assert "<frame-1>: Front" in manifest
+    assert "<frame-2>: Front Left" in manifest
+    assert "frame-0" not in manifest
+    assert "Frame-" not in manifest
+
+
+def test_build_prompts_pointer_manifest_matches_pointer_token_labels():
+    """C1: the pointer manifest must name <frame-1>..<frame-N>, matching the token
+    groups pointer_data.py emits; the baseline manifest must keep Frame-0..N-1."""
+    pointer, baseline = build_prompts(WAYMO_SAMPLE)
+    labels = ["Front", "Front Left", "Side Left", "Front Right", "Side Right"]
+
+    for i, label in enumerate(labels):
+        assert f"<frame-{i + 1}>: {label}" in pointer
+        assert f"Frame-{i}: {label}" in baseline
+    # No off-by-one leftovers in either direction.
+    assert "<frame-0>" not in pointer
+    assert f"<frame-{len(labels) + 1}>" not in pointer
+    assert "Frame-" not in pointer
+    assert f"Frame-{len(labels)}:" not in baseline
+    assert "<frame" not in baseline
 
 
 def test_build_prompts_pointer_has_pad_and_baseline_does_not():
@@ -95,7 +128,6 @@ def test_build_prompts_pointer_has_pad_and_baseline_does_not():
     assert "<|pointer_pad|>" not in baseline
     for prompt in (pointer, baseline):
         assert "<image>" not in prompt
-        assert "Frame-0: Front" in prompt
         assert "does the ego car get closer" in prompt
         assert prompt.rstrip().endswith("B. no")
 
@@ -172,6 +204,21 @@ def test_link_scene_creates_ordered_symlinks(tmp_path):
     ]
     assert all((scene_dir / name).is_symlink() for name in linked)
     assert (scene_dir / "00_Front.jpg").resolve() == (image_root / "seg_FRONT.jpg").resolve()
+
+
+def test_unknown_source_fails_identically_in_build_scene_and_link_names(tmp_path):
+    """build_scene, _link_names and link_scene all index VIEW_ORDER directly, so an
+    unrecognized source raises in all three rather than half-succeeding in some."""
+    from convert_ego3d import _link_names
+
+    bad = dict(WAYMO_SAMPLE, source="kitti")
+    with pytest.raises(KeyError):
+        build_scene(bad)
+    with pytest.raises(KeyError):
+        _link_names(bad)
+    with pytest.raises(KeyError):
+        link_scene({"source": "kitti", "scene_id": "s", "image_names": []},
+                   tmp_path / "images", tmp_path / "scenes")
 
 
 def test_link_scene_fails_loudly_on_missing_image(tmp_path):

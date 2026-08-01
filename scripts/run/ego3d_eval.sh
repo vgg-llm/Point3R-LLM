@@ -18,7 +18,18 @@
 #   behavior (rather than changing the wrapper) by pinning
 #   CUDA_VISIBLE_DEVICES=0 below whenever num_processes == 1 and the caller
 #   hasn't already set CUDA_VISIBLE_DEVICES themselves.
+# WEIGHTS: `pointer`/`pointer_think` default to the finetuned Point3R checkpoint,
+# `baseline` defaults to stock Qwen/Qwen3-VL-4B-Instruct. Comparing those two
+# defaults varies the WEIGHTS as well as the visual substrate. For a controlled
+# substrate comparison, hold the weights fixed by pointing baseline at the same
+# checkpoint:
+#   MODEL_PATH=./outputs/scan2cap_point3r_Qwen3VL_memfeat_lambda0.5 \
+#       bash scripts/run/ego3d_eval.sh baseline
+# Every mode honors MODEL_PATH.
 set -e
+# Without pipefail, `set -e` cannot see a crashed eval through the `| tee` below and
+# the script would exit 0 on a failed run.
+set -o pipefail
 
 ACCELERATE_BIN=${ACCELERATE_BIN:-/home/gwakcy/miniconda3/envs/vgllm/bin/accelerate}
 
