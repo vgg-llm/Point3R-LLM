@@ -281,6 +281,27 @@ def test_marked_option_letter_inside_a_sentence_is_a_last_resort_only():
     assert row["accuracy"] == 0.0
 
 
+def test_marked_option_letter_requires_a_closed_answer_span():
+    """The last-resort marked/span-final letter scan must not mine unclosed reasoning.
+
+    A response with no closed <answer> span must not be prose-mined for a trailing
+    or parenthesized letter, exactly like extract_number's closed-span requirement.
+    """
+    row = ego3d.ego3d_process_results(
+        FOUR_OPT_DOC, ["<think>The nearest vehicle appears to be a"])["ego3d_score"]
+    assert row["accuracy"] == 0.0  # GT is 'A'; must NOT be credited via the trailing "a"
+
+    row = ego3d.ego3d_process_results(
+        FOUR_OPT_DOC,
+        ["Looking at option (a), 36 meters seems plausible because the SUV"])["ego3d_score"]
+    assert row["accuracy"] == 0.0  # GT is 'A'; must NOT be credited via "(a)"
+
+    # The feature itself must still work inside a properly CLOSED span.
+    row = ego3d.ego3d_process_results(
+        FOUR_OPT_DOC, ["<answer>The answer is (A).</answer>"])["ego3d_score"]
+    assert row["accuracy"] == 1.0
+
+
 # --- C2: numeric answers must come from a real answer, not from the reasoning ----
 
 

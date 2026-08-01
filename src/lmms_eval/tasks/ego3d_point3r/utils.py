@@ -280,9 +280,19 @@ def _marked_option_letter(prediction, options):
 
     Only fires when neither the leading-letter nor the option-TEXT path resolved the
     prediction, and only for a letter that is in range for this doc's option count.
+
+    Requires a properly CLOSED <answer>...</answer> span. Without that guard this
+    scans the entire reasoning text when the response has no closed span (see
+    `_answer_span`), which mines prose exactly like the numeric side used to: a
+    truncated response ending in the indefinite article "a" ("... appears to be a")
+    or mentioning "option (a)" mid-reasoning would be misread as option A. When there
+    is no closed span, this must return None so the prediction falls through to the
+    documented worst case, mirroring `extract_number`'s `require_answer_tag` guard.
     """
     num_options = len(options) if options else 0
     if num_options == 0:
+        return None
+    if _closed_answer_span(prediction) is None:
         return None
     span = _full_answer_span(prediction)
     for pattern in _MARKED_OPTION_LETTER_RES:
