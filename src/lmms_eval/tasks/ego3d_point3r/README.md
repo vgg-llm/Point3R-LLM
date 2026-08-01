@@ -41,10 +41,39 @@ with `add_frame_id=true`, as `scripts/run/ego3d_eval.sh` does.
 |---|---|
 | `baseline` | stock `Qwen/Qwen3-VL-4B-Instruct` |
 | `pointer`, `pointer_think` | `./outputs/scan2cap_point3r_Qwen3VL_memfeat_lambda0.5` (finetuned) |
+| `images_finetuned` | `./outputs/scan2cap_point3r_Qwen3VL_memfeat_lambda0.5` (finetuned) |
 
-Any headline gap between those two runs therefore mixes a weights difference with the
-substrate difference and is **not** a measurement of the pointer substrate. Every mode
-honors `MODEL_PATH`, so hold the weights fixed for a controlled comparison:
+Any headline gap between `baseline` and `pointer`/`pointer_think` therefore mixes a
+weights difference with the substrate difference and is **not** a measurement of the
+pointer substrate. Every mode honors `MODEL_PATH`.
+
+### 2x2 design: {stock, finetuned} weights x {images, pointer tokens}
+
+To isolate the pointer-vs-images substrate effect from the weights effect, run all
+four cells on the same official think protocol:
+
+| | images | pointer tokens |
+|---|---|---|
+| **stock weights** | `baseline` (`MODEL_PATH` unset) | not supported — the finetune is what adds pointer support |
+| **finetuned weights** | `images_finetuned` | `pointer_think` |
+
+The pointer-vs-images comparison that holds weights fixed is `images_finetuned` vs.
+`pointer_think` (both default to the same finetuned checkpoint). The
+weights-vs-weights comparison that holds the substrate fixed is `baseline` (pointed
+at the finetuned checkpoint via `MODEL_PATH`) vs. `images_finetuned`.
+
+`images_finetuned` runs the same `ego3d_baseline` task as `baseline` (real images,
+`add_frame_index=true`, official think protocol) but sets
+`merge_memory_feat=True,memory_fusion_method=add` in the model args so that the
+finetuned checkpoint's own training config matches at eval time and
+`config_validation.py`'s critical-parameter check passes. It still feeds real images,
+not pointer memory (`use_pointer_memory=False`, `use_preprocessed_input=False`); the
+memory-feature-fusion module is built into the model to match the checkpoint's
+architecture but is never exercised at runtime, because that code path is gated
+behind `use_pointer_memory` (`src/lmms_eval/models/point3r_llm_v2.py:655-669`).
+
+For a controlled substrate-only comparison at stock weights, hold the weights fixed
+by pointing `baseline` at the finetuned checkpoint instead:
 
     MODEL_PATH=./outputs/scan2cap_point3r_Qwen3VL_memfeat_lambda0.5 \
         bash scripts/run/ego3d_eval.sh baseline
