@@ -2,7 +2,7 @@
 #SBATCH --job-name=Cog3DMap_Rebuttal_Naive_Qwen3-VL_VSI-bench_train_n_evaluation
 #SBATCH -o sbatch_log/vsibench-naive-Qwen3-VL-8b.%j.out
 #SBATCH --partition=cms_cvlab
-#SBATCH --gres=gpu:8
+#SBATCH --gres=gpu:4
 #SBATCH --nodes=1
 #SBATCH --export=ALL,MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/chanyoung/Cog3DMap
 #SBATCH --wckey=project-short-name:others
@@ -10,7 +10,7 @@
 # Experiment: VSTIBench with naive evaluation
 source venv/bin/activate
 
-export NUM_PROCESSES=8
+export NUM_PROCESSES=4
 
 export EXP_NAME="vsibench_naive_train_n_eval_8gpu"
 export MODEL_PATH="Qwen/Qwen3-VL-8B-Instruct"
