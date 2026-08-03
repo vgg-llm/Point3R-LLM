@@ -569,7 +569,7 @@ class Point3RLLMv3(lmms):
                 "temperature": gen_kwargs["temperature"],
                 "top_p": gen_kwargs["top_p"],
                 "num_beams": gen_kwargs["num_beams"],
-                "presence_penalty": gen_kwargs["presence_penalty"],
+                # "presence_penalty": gen_kwargs["presence_penalty"],
                 "repetition_penalty": gen_kwargs["repetition_penalty"],
                 "max_new_tokens": gen_kwargs["max_new_tokens"],
                 "use_cache": self.use_cache,

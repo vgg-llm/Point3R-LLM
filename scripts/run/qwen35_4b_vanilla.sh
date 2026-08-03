@@ -30,7 +30,7 @@ export BENCHMARKS="scan2cap"
 export EVAL_MODEL_TYPE="point3r_llm_v3"
 
 # --- Train ---
-# bash scripts/train/train.sh
+bash scripts/train/train.sh
 
 export NUM_PROCESSES=8
 export EVAL_LIMIT=10

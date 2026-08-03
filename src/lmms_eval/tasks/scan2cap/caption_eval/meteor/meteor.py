@@ -52,7 +52,10 @@ class Meteor:
 
     def _stat(self, hypothesis_str, reference_list):
         # SCORE ||| reference 1 words ||| reference n words ||| hypothesis words
-        hypothesis_str = hypothesis_str.replace('|||','').replace('  ',' ')
+        # The jar speaks a line-oriented protocol, so any newline in the text would
+        # split one SCORE command into two and desync the stdout reads below.
+        hypothesis_str = ' '.join(hypothesis_str.replace('|||','').split())
+        reference_list = [' '.join(r.replace('|||','').split()) for r in reference_list]
         score_line = ' ||| '.join(('SCORE', ' ||| '.join(reference_list), hypothesis_str))
         self.meteor_p.stdin.write('{}\n'.format(score_line).encode())
         self.meteor_p.stdin.flush()
