@@ -13,7 +13,7 @@
 # For a full list of configurable parameters, see the "Defaults" section below.
 # =============================================================================
 
-set -e
+set -eo pipefail
 
 # =============================================================================
 # Defaults
@@ -253,7 +253,7 @@ if [[ "${DRY_RUN:-}" == "1" ]]; then
     printf '%q ' "${CMD[@]}"
     echo ""
 else
-    "${CMD[@]}" 2>&1 | tee "${OUTPUT_DIR}/train.log"
+    "${CMD[@]}" 2>&1 | tee -a "${OUTPUT_DIR}/train.log"
     echo "============================================="
     echo "Training completed!"
     echo "Output saved to: ${OUTPUT_DIR}"
