@@ -101,12 +101,11 @@ def set_model(model_args, model):
             "feature_projector has been removed from the model."
         )
 
-    # Memory feature projector - DEPRECATED
-    if getattr(model_args, 'tune_memory_feature_projector', False):
-        raise DeprecationWarning(
-            "tune_memory_feature_projector is no longer supported. "
-            "memory_feature_projector has been removed from the model."
-        )
+    # Memory feature projector - independent control
+    if hasattr(model, 'memory_feature_projector'):
+        tune_mfp = getattr(model_args, 'tune_memory_feature_projector', False)
+        for n, p in model.memory_feature_projector.named_parameters():
+            p.requires_grad = tune_mfp
 
     # Memory feature fusion - independent control
     if hasattr(model, 'memory_feature_fusion'):
